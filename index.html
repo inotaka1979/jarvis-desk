@@ -69,7 +69,7 @@ h1,h2,h3,p{margin:0}
 .presence .dot{width:8px;height:8px;border-radius:50%;border:1.5px solid var(--ink-2)}
 .presence:not([data-state="idle"]) .dot{background:var(--pen);border-color:var(--pen)}
 .presence:not([data-state="idle"]){color:var(--ink)}
-.presence[data-state="speaking"]{display:none}
+.presence.quiet{display:none}
 .icon-btn{flex:none;width:44px;height:44px;display:inline-flex;align-items:center;justify-content:center;border:0;background:none;border-radius:10px;color:var(--ink)}
 .icon-btn[aria-pressed="true"]{color:var(--pen)}
 .icon-btn[aria-pressed="false"] .wave{display:none}
@@ -209,6 +209,7 @@ dialog::backdrop{background:var(--shade)}
 .mem li span{flex:1;padding-top:8px;overflow-wrap:anywhere}
 .add-row{display:flex;gap:8px;align-items:flex-end}
 .toast{position:fixed;left:50%;bottom:68px;transform:translateX(-50%);max-width:calc(100% - 32px);background:var(--key-bg);color:var(--key-fg);border-radius:10px;padding:8px 14px;font-size:13.5px;line-height:1.5;z-index:5}
+.toast.over{bottom:auto;top:12px}
 
 @media (min-width:700px){
   body{font-size:15.5px}
@@ -356,8 +357,10 @@ dialog::backdrop{background:var(--shade)}
       <h3 class="sec-title">データ</h3>
       <div class="btn-row">
         <button type="button" class="btn" id="export" hidden>台帳と会話を書き出す</button>
+        <button type="button" class="btn" id="import">書き出したファイルを読み込む</button>
         <button type="button" class="btn danger" id="clear-talk">会話を消す</button>
       </div>
+      <input type="file" id="import-file" accept=".json,application/json" hidden>
       <p class="fine" id="store-note"></p>
       <p class="fine">返答はClaudeが作り、あなたのClaudeの利用枠を使います。Webの検索や、PC・リポジトリの操作はできません。</p>
     </div>
@@ -407,7 +410,7 @@ const S = {
   prefs: { ...DEFAULT_PREFS }, memory: [], projects: [], orders: [], turns: [],
   tab: 'talk', focus: null, filterKind: 'all', filterStatus: null,
   caps: { sample: undefined, dictation: undefined, tts: undefined, downloads: undefined },
-  store: 'pending', loaded: false, stale: false, dbError: false, denied: false,
+  store: 'pending', loaded: false, stale: false, dbError: false, denied: false, talkMiss: false, ttsOff: false,
   busy: false, ctl: null, presence: 'idle',
   openOrder: null, drafting: false, orderError: null, reviewing: false, reviewError: null,
   form: { projectId: '', target: TARGETS[0], brief: '', staged: true },
@@ -417,11 +420,13 @@ const S = {
 const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ESC[c]);
 function inline(src) {
+  /* コード記法は番号に置き換えて退避する。前後の目印は \uE000 と \uE001（見えない文字なので、必ずエスケープ表記で書く）。 */
   const codes = [];
-  let s = esc(src).replace(/`([^`\n]+)`/g, (_, c) => { codes.push(c); return '' + (codes.length - 1) + ''; });
+  let s = esc(String(src).replace(/[\uE000\uE001]/g, '')).replace(/`([^`\n]+)`/g, (_, c) => { codes.push(c); return '\uE000' + (codes.length - 1) + '\uE001'; });
   s = s.replace(/\*\*([^*\n]+?)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/(^|[^*\\\w])\*([^\s*](?:[^*\n]*[^\s*])?)\*(?![*\w])/g, '$1<em>$2</em>');
   s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>');
-  return s.replace(/(\d+)/g, (_, i) => '<code>' + codes[+i] + '</code>');
+  return s.replace(/\uE000(\d+)\uE001/g, (_, i) => '<code>' + codes[+i] + '</code>');
 }
 const LIST_RE = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
 function listBlock(lines, i) {
@@ -443,10 +448,14 @@ function listBlock(lines, i) {
     break;
   }
   const render = (kids) => {
-    if (!kids.length) return '';
-    const ol = kids[0].ordered;
-    return (ol ? '<ol' + (kids[0].start !== 1 ? ' start="' + kids[0].start + '"' : '') + '>' : '<ul>') +
-      kids.map((k) => '<li>' + k.text.map(inline).join('<br>') + render(k.kids) + '</li>').join('') + (ol ? '</ol>' : '</ul>');
+    /* 同じ深さでも、箇条書きと番号付きが切り替わったら別のリストにする */
+    let out = ''; let n = 0;
+    while (n < kids.length) {
+      const head = kids[n]; const ol = head.ordered; let items = '';
+      while (n < kids.length && kids[n].ordered === ol) { const k = kids[n++]; items += '<li>' + k.text.map(inline).join('<br>') + render(k.kids) + '</li>'; }
+      out += (ol ? '<ol' + (head.start !== 1 ? ' start="' + head.start + '"' : '') + '>' : '<ul>') + items + (ol ? '</ol>' : '</ul>');
+    }
+    return out;
   };
   return [render(root.kids), i];
 }
@@ -507,29 +516,61 @@ function splitLedger(text, streaming) {
   let raw = text.slice(i + LEDGER_OPEN.length);
   const j = raw.indexOf('>>>');
   if (j >= 0) raw = raw.slice(0, j);
-  return { body: text.slice(0, i).trimEnd(), raw };
+  let body = text.slice(0, i).trimEnd();
+  /* ブロックがコード枠で囲まれて届いたときは、開いたままの枠を本文に残さない */
+  const dangling = /(^|\n)[ \t]*```[\w-]*$/;
+  if ((body.match(/^[ \t]*```/gm) || []).length % 2 === 1 && dangling.test(body)) body = body.replace(dangling, '').trimEnd();
+  return { body, raw };
+}
+/* 文字列の外にある「末尾の余分なカンマ」だけを取り除く */
+function dropTrailingCommas(src) {
+  let out = ''; let inStr = false; let back = false;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (inStr) { out += ch; if (back) back = false; else if (ch === '\\') back = true; else if (ch === '"') inStr = false; continue; }
+    if (ch === '"') { inStr = true; out += ch; continue; }
+    if (ch === ',' && /^\s*[\]}]/.test(src.slice(i + 1))) continue;
+    out += ch;
+  }
+  return out;
 }
 function parseActions(raw) {
   if (!raw) return [];
-  const a = raw.indexOf('['); const b = raw.lastIndexOf(']');
-  if (a < 0 || b <= a) return [];
-  try { const v = JSON.parse(raw.slice(a, b + 1)); return Array.isArray(v) ? v : []; } catch (e) { return []; }
+  let src;
+  const a = raw.indexOf('[');
+  if (a >= 0) { const b = raw.lastIndexOf(']'); if (b <= a) return []; src = raw.slice(a, b + 1); }
+  else { const c = raw.indexOf('{'); const d = raw.lastIndexOf('}'); if (c < 0 || d <= c) return []; src = '[' + raw.slice(c, d + 1) + ']'; }
+  /* まずそのまま読む。だめなら末尾の余分なカンマを除き、それでもだめなら全角の引用符も直して読み直す */
+  const straight = (s) => s.replace(/[\u201C\u201D]/g, '"');
+  for (const s of [src, dropTrailingCommas(src), dropTrailingCommas(straight(src))]) {
+    try { const v = JSON.parse(s); if (Array.isArray(v)) return v; } catch (e) { /* 次の読み方へ */ }
+  }
+  return [];
 }
 
 /* ---------- 保存 ---------- */
 const LS_KEY = 'jarvis-desk-v1';
 let db = null; let base = '';
 const queues = new Map();
+/* 同じ文書への書き込みは1つずつ。待っている間に次が来たら、いちばん新しいものだけを書く。書き終わりを待てるよう約束を返す。 */
 function enqueue(key, job) {
   let q = queues.get(key);
-  if (!q) { q = { running: false, next: null }; queues.set(key, q); }
+  if (!q) { q = { running: false, next: null, waiters: [] }; queues.set(key, q); }
   q.next = job;
-  if (q.running) return;
-  q.running = true;
-  (async () => {
-    while (q.next) { const j = q.next; q.next = null; try { await j(); } catch (e) { writeFailed(e); } }
-    q.running = false;
-  })();
+  const done = new Promise((resolve) => { q.waiters.push(resolve); });
+  if (!q.running) {
+    q.running = true;
+    (async () => {
+      while (q.next) {
+        const j = q.next; const ws = q.waiters; q.next = null; q.waiters = [];
+        let ok = true;
+        try { await j(); } catch (e) { ok = false; writeFailed(e); }
+        ws.forEach((w) => w(ok));
+      }
+      q.running = false;
+    })();
+  }
+  return done;
 }
 let warned = false;
 function writeFailed(e) {
@@ -537,11 +578,11 @@ function writeFailed(e) {
   toast(e && e.code === 'quota_exceeded' ? '保存の上限に達しました。古い発注書を消してください。' : '保存できませんでした。通信を確認してください。');
   setTimeout(() => { warned = false; }, 8000);
 }
-function fitTurns(turns, maxBytes = 120000) {
+function fitTurns(turns, maxBytes = 200000) {
   let list = turns.slice(-60).map((t) => {
-    const o = { role: t.role, content: String(t.content || '').slice(0, 12000), at: t.at };
+    const o = { role: t.role, content: String(t.content || '').slice(0, 40000), at: t.at };
     if (t.acts && t.acts.length) o.acts = t.acts.map((a) => ({ label: a.label }));
-    if (t.cut) o.cut = true; if (t.stopped) o.stopped = true; if (t.tier) o.tier = t.tier;
+    if (t.cut) o.cut = true; if (t.stopped) o.stopped = true; if (t.tier) o.tier = t.tier; if (t.miss) o.miss = t.miss;
     return o;
   });
   const size = () => new TextEncoder().encode(JSON.stringify(list)).length;
@@ -551,87 +592,180 @@ function fitTurns(turns, maxBytes = 120000) {
 function persistLocal() {
   try { localStorage.setItem(LS_KEY, JSON.stringify({ prefs: S.prefs, memory: S.memory, projects: S.projects, orders: S.orders, turns: fitTurns(S.turns) })); } catch (e) { /* 保存できない表示では、開いている間だけ保持する */ }
 }
-function loadLocal() {
-  try {
-    const v = JSON.parse(localStorage.getItem(LS_KEY) || 'null');
-    if (!v) return;
-    S.prefs = { ...DEFAULT_PREFS, ...(v.prefs || {}) };
-    S.memory = Array.isArray(v.memory) ? v.memory : [];
-    S.projects = Array.isArray(v.projects) ? v.projects.sort(byOrder) : [];
-    S.orders = Array.isArray(v.orders) ? v.orders : [];
-    S.turns = Array.isArray(v.turns) ? v.turns : [];
-  } catch (e) { /* 何もなければ空で始める */ }
-}
+/* 保存してある内容が届くまでは、設定・記憶・会話を書き込まない（空の状態で上書きしないため）。
+   届く前の変更は Held に控えておき、届いた内容に重ねてから保存する。案件と発注書は1件ずつ別の文書なので、そのまま書く。 */
+const Got = { desk: false, talk: false };
+const Held = { desk: false, prefs: {}, add: [], drop: new Set(), talk: false, cleared: false };
+const SAVED = Promise.resolve(true); const WAITING = Promise.resolve(false);
 const Store = {
   saveDesk() {
-    if (S.store === 'db') { const data = { v: 1, prefs: { ...S.prefs }, memory: S.memory.map((m) => ({ ...m })) }; enqueue('desk', () => db.doc(base + '/desk').set(data)); }
-    else persistLocal();
+    if (!Got.desk) { Held.desk = true; return WAITING; }
+    if (S.store === 'db') { const data = { v: 1, prefs: { ...S.prefs }, memory: S.memory.map((m) => ({ ...m })) }; return enqueue('desk', () => db.doc(base + '/desk').set(data)); }
+    persistLocal(); return SAVED;
   },
   saveTalk() {
-    if (S.store === 'db') { const data = { turns: fitTurns(S.turns), updatedAt: Date.now() }; enqueue('talk', () => db.doc(base + '/talk').set(data)); }
-    else persistLocal();
+    if (!Got.talk) { Held.talk = true; if (S.store === 'db' && S.talkMiss) loadTalk(false); return WAITING; }
+    if (S.store === 'db') { const data = { turns: fitTurns(S.turns), updatedAt: Date.now() }; return enqueue('talk', () => db.doc(base + '/talk').set(data)); }
+    persistLocal(); return SAVED;
   },
   saveProject(p) {
-    if (S.store === 'db') { const data = { ...p }; delete data.id; enqueue('p:' + p.id, () => db.doc(base + '/desk/projects/' + p.id).set(data)); }
-    else persistLocal();
+    if (S.store === 'db') { const data = { ...p }; delete data.id; return enqueue('p:' + p.id, () => db.doc(base + '/desk/projects/' + p.id).set(data)); }
+    if (S.store === 'local') persistLocal();
+    return SAVED;
   },
   deleteProject(id) {
-    if (S.store === 'db') enqueue('p:' + id, () => db.doc(base + '/desk/projects/' + id).delete());
-    else persistLocal();
+    if (S.store === 'db') return enqueue('p:' + id, () => db.doc(base + '/desk/projects/' + id).delete());
+    if (S.store === 'local') persistLocal();
+    return SAVED;
   },
   saveOrder(o) {
-    if (S.store === 'db') { const data = { ...o }; delete data.id; enqueue('o:' + o.id, () => db.doc(base + '/desk/orders/' + o.id).set(data)); }
-    else persistLocal();
+    if (S.store === 'db') { const data = { ...o }; delete data.id; return enqueue('o:' + o.id, () => db.doc(base + '/desk/orders/' + o.id).set(data)); }
+    if (S.store === 'local') persistLocal();
+    return SAVED;
   },
   deleteOrder(id) {
-    if (S.store === 'db') enqueue('o:' + id, () => db.doc(base + '/desk/orders/' + id).delete());
-    else persistLocal();
+    if (S.store === 'db') return enqueue('o:' + id, () => db.doc(base + '/desk/orders/' + id).delete());
+    if (S.store === 'local') persistLocal();
+    return SAVED;
   },
 };
+/* 設定と記憶の変更は、必ずこの3つを通す */
+function putPrefs(patch) {
+  Object.assign(S.prefs, patch);
+  if (!Got.desk) Object.assign(Held.prefs, patch);
+  return Store.saveDesk();
+}
+function addMemory(text) {
+  const m = { id: uid('m'), text: clip(text, 300), at: Date.now() };
+  S.memory.push(m);
+  if (!Got.desk) Held.add.push(m);
+  Store.saveDesk();
+  return m;
+}
+function dropMemory(id) {
+  S.memory = S.memory.filter((x) => x.id !== id);
+  if (!Got.desk) { Held.add = Held.add.filter((x) => x.id !== id); Held.drop.add(id); }
+  Store.saveDesk();
+}
+/* 届いた設定と記憶を画面の状態にする。控えてある変更があれば、その上に重ねる。 */
+function deskView(d) {
+  const prefs = { ...DEFAULT_PREFS, ...((d && d.prefs) || {}), ...Held.prefs };
+  let memory = d && Array.isArray(d.memory) ? d.memory.map((m) => ({ ...m })) : [];
+  if (Held.drop.size) memory = memory.filter((m) => !Held.drop.has(m.id));
+  for (const m of Held.add) if (!memory.some((x) => x.id === m.id)) memory.push({ ...m });
+  S.prefs = prefs; S.memory = memory;
+}
+function deskArrived(d) {
+  deskView(d);
+  if (Got.desk) return;
+  Got.desk = true;
+  const dirty = Held.desk; Held.desk = false; Held.prefs = {}; Held.add = []; Held.drop = new Set();
+  if (dirty) Store.saveDesk();
+  if (S.stale) renderBanner();
+}
+const cloneTurn = (t) => ({ ...t, acts: Array.isArray(t.acts) ? t.acts.map((a) => ({ ...a })) : undefined });
+const talkMissEl = () => h('p', { class: 'fine', id: 'talk-miss', text: '前回までの会話を読み込めませんでした。読み込めるまで、この相談は保存されません。' });
+function talkArrived(d) {
+  if (Got.talk) return;
+  Got.talk = true; S.talkMiss = false;
+  const miss = $('#talk-miss'); if (miss) miss.remove();
+  const stored = !Held.cleared && d && Array.isArray(d.turns) ? d.turns.map(cloneTurn) : [];
+  Held.cleared = false;
+  if (stored.length) {
+    if (S.turns.length) {
+      /* 届く前に始めた相談があれば、保存済みの会話をその前につなぐ */
+      S.turns = stored.concat(S.turns);
+      const hello = $('#hello'); if (hello) hello.after(...stored.map((t) => turnEl(t)));
+      updateTools();
+    } else { S.turns = stored; if (S.loaded) renderLog(); }
+  }
+  if (Held.talk) { Held.talk = false; Store.saveTalk(); }
+  if (S.stale) renderBanner();
+}
+let talkLoading = false;
+function loadTalk(again) {
+  if (Got.talk || talkLoading || !db) return Promise.resolve();
+  talkLoading = true;
+  return db.doc(base + '/talk').get().then((snap) => { talkLoading = false; talkArrived(snap.exists ? snap.data() : null); }, () => {
+    talkLoading = false;
+    /* 一時的な失敗は、少し置いて1回だけ読み直す。それでもだめなら、次に保存するときにもう一度試す。 */
+    if (again) return new Promise((r) => setTimeout(r, 700 + Math.random() * 900)).then(() => loadTalk(false));
+    showTalkMiss();
+    return undefined;
+  });
+}
+function showTalkMiss() {
+  S.talkMiss = true;
+  const hello = $('#hello'); if (S.loaded && hello && !$('#talk-miss')) hello.after(talkMissEl());
+}
+function startLocal() {
+  S.store = 'local';
+  let v = null;
+  try { v = JSON.parse(localStorage.getItem(LS_KEY) || 'null'); } catch (e) { v = null; /* 何もなければ空で始める */ }
+  if (v) { S.projects = Array.isArray(v.projects) ? v.projects.sort(byOrder) : []; S.orders = Array.isArray(v.orders) ? v.orders : []; }
+  deskArrived(v);
+  talkArrived(v);
+  finishLoad();
+  if ($('#dlg-settings').open) fillSettings();
+}
 const byOrder = (a, b) => (a.order || 0) - (b.order || 0) || String(a.name).localeCompare(String(b.name), 'ja');
 const byNewest = (a, b) => (b.createdAt || 0) - (a.createdAt || 0);
 
 function startDb() {
-  let pending = 4;
-  /* 保存先が10秒答えなければ、その旨を出して空の状態で使えるようにする。届いた分はあとから反映される。 */
-  const staleTimer = setTimeout(() => { if (!S.dbError) { S.stale = true; renderBanner(); } if (!S.loaded) finishLoad(); }, 10000);
-  const settle = () => { if (--pending === 0 && !S.loaded) finishLoad(); };
-  const live = (snap) => { if (!snap.metadata || !snap.metadata.fromCache) { clearTimeout(staleTimer); if (S.stale) { S.stale = false; renderBanner(); } } };
+  let pending = 4; let timer = 0;
+  const liveOk = { desk: false, projects: false, orders: false };
+  const allLive = () => liveOk.desk && liveOk.projects && liveOk.orders;
+  /* 保存先が10秒答えなければ、その旨を出して空の状態で使えるようにする。届いた分はあとから反映される。
+     3つの読み込みと会話の読み込みがすべて済むまで、この時計は止めない（1つだけ届かない場合も先へ進めるため）。 */
+  timer = setTimeout(() => {
+    timer = 0;
+    if (!S.dbError && !allLive()) { S.stale = true; renderBanner(); }
+    if (!Got.talk) showTalkMiss(); /* 会話がまだ届いていないことも知らせる（届けば消える） */
+    if (!S.loaded) finishLoad();
+  }, 10000);
+  const quiet = () => { if (timer && pending <= 0 && allLive()) { clearTimeout(timer); timer = 0; } };
+  const settle = () => { if (--pending === 0 && !S.loaded) finishLoad(); quiet(); };
+  const live = (k, snap) => {
+    if (snap.metadata && snap.metadata.fromCache) return false;
+    liveOk[k] = true;
+    if (allLive() && S.stale) { S.stale = false; renderBanner(); }
+    quiet();
+    return true;
+  };
   const first = { desk: true, projects: true, orders: true };
   const once = (k) => { if (first[k]) { first[k] = false; settle(); } };
-  const fail = (k) => () => { clearTimeout(staleTimer); S.stale = false; S.dbError = true; once(k); renderBanner(); };
+  const fail = (k) => () => { S.stale = false; S.dbError = true; once(k); renderBanner(); };
 
+  let deskCopy = null; let copyTimer = 0;
   db.doc(base + '/desk').onSnapshot((snap) => {
-    live(snap);
-    if (snap.exists) {
-      const d = snap.data() || {};
-      S.prefs = { ...DEFAULT_PREFS, ...(d.prefs || {}) };
-      S.memory = Array.isArray(d.memory) ? d.memory.map((m) => ({ ...m })) : [];
+    const d = snap.exists ? (snap.data() || {}) : null;
+    if (live('desk', snap) || Got.desk) deskArrived(d);
+    else {
+      /* 端末に残っていた控えは、まず表示にだけ使う。保存を始めるのは、保存先から本物が届いてから。
+         ただし20秒たっても届かないときは、控え（以前に保存した本物）を土台にして保存を再開する。 */
+      deskView(d); deskCopy = d;
+      if (d && !copyTimer) copyTimer = setTimeout(() => { if (!Got.desk) deskArrived(deskCopy); }, 20000);
     }
     const loaded = S.loaded; once('desk');
-    if (loaded) { renderHeader(); refreshGreeting(); updateVoiceUI(); if (S.tab === 'ledger') renderLedger(); if ($('#dlg-settings').open) renderMemory(); }
+    if (loaded) { renderHeader(); refreshGreeting(); updateVoiceUI(); if (S.tab === 'ledger') renderLedger(); }
+    if ($('#dlg-settings').open) fillSettings();
   }, fail('desk'));
 
   db.collection(base + '/desk/projects').onSnapshot((snap) => {
-    live(snap);
+    live('projects', snap);
     S.projects = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort(byOrder);
     const loaded = S.loaded; once('projects');
     if (loaded) { refreshGreeting(); if (S.tab === 'ledger') renderLedger(); if (S.tab === 'orders' && !S.openOrder) renderOrders(); updateTools(); }
   }, fail('projects'));
 
   db.collection(base + '/desk/orders').onSnapshot((snap) => {
-    live(snap);
+    live('orders', snap);
     S.orders = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort(byNewest);
     const loaded = S.loaded; once('orders');
     if (loaded && S.tab === 'orders' && !S.drafting && !S.openOrder) renderOrders();
   }, fail('orders'));
 
-  db.doc(base + '/talk').get().then((snap) => {
-    if (!snap.exists || S.turns.length || S.busy) return;
-    const d = snap.data() || {};
-    S.turns = Array.isArray(d.turns) ? d.turns.map((t) => ({ ...t, acts: Array.isArray(t.acts) ? t.acts.map((a) => ({ ...a })) : undefined })) : [];
-    if (S.loaded) renderLog();
-  }, () => {}).then(settle);
+  loadTalk(true).then(settle);
 }
 function finishLoad() {
   S.loaded = true;
@@ -684,28 +818,43 @@ const Trace = (() => {
   refresh();
   return { set(m) { mode = m; kick(); } };
 })();
-function setPresence(p) {
-  if (S.presence === p) return;
-  S.presence = p;
-  $('#presence-text').textContent = PRESENCE[p] || PRESENCE.idle;
-  $('#presence').dataset.state = p;
-  $('#stop-voice').hidden = p !== 'speaking';
-  Trace.set(p);
+/* 「考えている／書いている」「聞いている」「話している」は別々に持つ。読み上げを止めるボタンは、読み上げが続いている間は必ず出す。 */
+const P = { work: 'idle', speaking: false, listening: false };
+function showPresence() {
+  const p = P.work !== 'idle' ? P.work : P.listening ? 'listening' : P.speaking ? 'speaking' : 'idle';
+  if (S.presence !== p) {
+    S.presence = p;
+    $('#presence-text').textContent = PRESENCE[p] || PRESENCE.idle;
+    $('#presence').dataset.state = p;
+    Trace.set(p);
+  }
+  $('#stop-voice').hidden = !P.speaking;
+  $('#presence').classList.toggle('quiet', P.speaking);
 }
-function restPresence() { if (S.presence !== 'speaking' && S.presence !== 'listening') setPresence('idle'); }
+function setWork(w) { P.work = w; showPresence(); }
+function setSpeaking(on) { P.speaking = !!on; showPresence(); }
+function setListening(on) { P.listening = !!on; showPresence(); }
 
+/* お知らせは、開いているダイアログがあればその中に出す（下に隠れないように）。 */
 let toastTimer = 0;
+function placeToast() {
+  const t = $('#toast'); const open = document.querySelectorAll('dialog[open]');
+  const host = open.length ? open[open.length - 1] : document.body;
+  if (t.parentNode !== host) host.append(t);
+  t.classList.toggle('over', host !== document.body);
+}
 function toast(msg) {
-  const t = $('#toast'); t.textContent = msg; t.hidden = false;
+  const t = $('#toast'); placeToast(); t.hidden = false; t.textContent = msg;
   clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 3600);
 }
 function renderHeader() { $('#nameplate').textContent = S.prefs.assistantName || 'ジャービス'; $('#msg').placeholder = (S.prefs.assistantName || 'ジャービス') + 'に話しかける'; }
 function renderBanner() {
   const b = $('#banner'); let msg = '';
   if (S.denied) msg = 'このページからClaudeを使う許可がありません。ページのアクセス許可でClaudeの利用を許可すると、相談と発注書づくりができます。';
-  else if (S.caps.sample === null) msg = 'この表示ではClaudeにつながっていません。Claudeアプリの中で開くと相談できます。台帳の閲覧と編集はこのまま使えます。';
+  else if (S.caps.sample === null && S.store === 'local') msg = 'この表示ではClaudeにつながっていません。相談はClaudeアプリの中で開くと使えます。ここに出ている台帳は、この端末のブラウザだけに保存される別のものです。';
+  else if (S.caps.sample === null) msg = 'この表示ではClaudeに相談できません。Claudeアプリの中で開くと相談できます。台帳の閲覧と編集はこのまま使えます。';
   else if (S.dbError) msg = '保存先につながりませんでした。開き直すと直ることがあります。いま表示している内容は保存されません。';
-  else if (S.stale) msg = '保存データをまだ読み込めていません。表示が古い可能性があります。';
+  else if (S.stale) msg = '保存データをまだ読み込めていません。表示が古い可能性があります。' + (Got.desk && Got.talk ? '' : '設定・記憶・会話の変更は、読み込めたあとに保存します。');
   b.textContent = msg; b.hidden = !msg;
 }
 
@@ -717,11 +866,16 @@ function waitCap(name) {
   });
 }
 function pickTier(text, purpose) {
+  const pref = S.prefs.tier && S.prefs.tier !== 'auto' ? S.prefs.tier : '';
+  /* 所見と発注書は、文面の言葉では切り替えない（依頼文に「ざっくり」とあっても速いモデルにしない） */
+  if (purpose !== 'talk') return pref || 'default';
   if (/じっくり|深く考え|徹底的|多角的/.test(text)) return 'complex';
   if (/手短に|ひとことで|一言で|ざっくり/.test(text)) return 'quick';
-  const pref = S.prefs.tier;
-  if (pref && pref !== 'auto') return pref;
-  if (purpose === 'talk' && text.length <= 12 && !/[?？]|なぜ|どう|案/.test(text)) return 'quick';
+  if (pref) return pref;
+  /* 速いモデルに任せるのは、短いあいさつやお礼だけ。「はい」「続けて」のような返事は、前の返答と同じ深さで答える。 */
+  if (text.length <= 12 && /^(ありがと|了解|承知|おはよう|こんにち|こんばん|お疲れ|おつかれ|ok|オーケー|わかりました|分かりました|助かり)/i.test(text)) return 'quick';
+  const prev = [...S.turns].reverse().find((t) => t.role === 'assistant');
+  if (text.length <= 12 && prev && prev.tier === 'complex') return 'complex';
   return 'default';
 }
 const ERR_TEXT = {
@@ -731,7 +885,7 @@ const ERR_TEXT = {
   session_expired: 'サインインが切れました。Claudeを開き直してください。',
   refused: 'この内容には返答できませんでした。聞き方を変えてみてください。',
   empty_completion: '返答が空でした。もう少し具体的に書いて送ってください。',
-  prompt_too_large: '会話が長くなりすぎました。「新しい相談」を始めてください。',
+  prompt_too_large: '送る内容が長すぎます。メッセージを短くするか、「新しい相談」を始めてください。台帳の記入が長いときは、概要や現状を短くしてください。',
   rate_limited: '立て込んでいます。少し待ってから送り直してください。',
   usage_limit: 'Claudeの利用上限に達しました。時間をおいて送り直してください。',
   upstream_error: '通信が途切れました。送り直してください。',
@@ -802,17 +956,26 @@ function rulesText() {
   L.push('', '以上を踏まえて、次のメッセージに答えてください。');
   return L.join('\n');
 }
-function contextTurns(limit = 28000) {
-  const out = []; let n = 0;
-  for (let i = S.turns.length - 1; i >= 0 && out.length < 24; i--) {
+/* 長すぎる発言は、頭と終わりを残して中ほどを省く */
+const squeeze = (s, n) => (s.length <= n ? s : s.slice(0, Math.floor(n * 0.65)) + '\n…（長いため中略）…\n' + s.slice(s.length - Math.floor(n * 0.3)));
+/* Claudeに渡す会話。新しいものから順に入れ、入り切らない古い発言は捨てずに切り詰めて残す
+   （長い資料を貼った直後の質問で、資料も返答も文脈から消えてしまわないように）。
+   先頭には必ず役割と台帳の説明が付くので、ここが返答から始まっても構わない。 */
+function contextTurns(limit = 60000) {
+  const list = []; let room = limit; let cut = false;
+  for (let i = S.turns.length - 1; i >= 0 && list.length < 24; i--) {
     const t = S.turns[i];
     if (!t.content) continue;
-    n += t.content.length;
-    if (n > limit && out.length) break;
-    out.unshift({ role: t.role === 'assistant' ? 'assistant' : 'user', content: t.content });
+    let c = t.content;
+    if (c.length > room) {
+      if (list.length && room < 1500) break;
+      c = squeeze(c, Math.max(room, 1500));
+      if (!list.length) cut = true;
+    }
+    room -= c.length;
+    list.unshift({ role: t.role === 'assistant' ? 'assistant' : 'user', content: c });
   }
-  while (out.length && out[0].role !== 'user') out.shift();
-  return out;
+  return { list, cut };
 }
 
 /* ---------- 相談 ---------- */
@@ -862,6 +1025,9 @@ function turnEl(t, live) {
   if (t.stopped) n.append(h('p', { class: 'fine', text: '途中で止まりました。' }));
   if (t.tier === 'complex') n.append(h('p', { class: 'fine', text: 'じっくり考えて答えました。' }));
   if (t.acts && t.acts.length) n.append(actsEl(t, live));
+  if (t.miss) n.append(h('p', { class: 'fine', text: t.miss < 0
+    ? '台帳の更新内容を読み取れなかったため、台帳は変わっていません。必要なら「台帳」で直接直してください。'
+    : '台帳の更新のうち' + t.miss + '件は反映できませんでした（該当する案件が見つからないなど）。「台帳」で確かめてください。' }));
   return n;
 }
 function errLine(e, retry) {
@@ -875,6 +1041,7 @@ function errLine(e, retry) {
 function renderLog() {
   const log = $('#log'); log.textContent = '';
   log.append(h('div', { class: 'turn jv hello', id: 'hello' }, h('p', { text: greetingText() })));
+  if (S.talkMiss) log.append(talkMissEl());
   for (const t of S.turns) log.append(turnEl(t));
   if (!S.turns.length) log.append(startersEl());
   updateTools();
@@ -903,8 +1070,11 @@ function updateTools() {
 function send(text) {
   text = String(text || '').trim();
   if (!text || S.busy || !S.loaded || S.caps.sample === null || S.denied) return;
+  stopSpeaking(); /* 次の話に移ったら、前の返答の読み上げは止める */
   unlockDeviceVoice();
   const st = $('#starters'); if (st) st.remove();
+  /* 前の失敗の「送り直す」は残さない（あとで押すと、新しい返答が作り直されてしまう） */
+  $('#log').querySelectorAll('.errline, .ctx-note').forEach((n) => n.remove());
   const turn = { role: 'user', content: text, at: Date.now() };
   S.turns.push(turn);
   $('#log').append(turnEl(turn)); toEnd(); updateTools();
@@ -912,7 +1082,7 @@ function send(text) {
 }
 async function answer() {
   if (S.busy) return;
-  S.busy = true; updateComposer(); setPresence('thinking');
+  S.busy = true; updateComposer(); setWork('thinking');
   const log = $('#log');
   const node = h('div', { class: 'turn jv' }, h('div', { class: 'md' }, h('p', { class: 'wait', text: '考えています' })));
   log.append(node); toEnd();
@@ -924,21 +1094,29 @@ async function answer() {
     if (!sample) throw { code: 'no_claude' };
     if (ctl.signal.aborted) throw { code: 'cancelled' };
     const lastUser = [...S.turns].reverse().find((t) => t.role === 'user');
-    const res = await sample([{ role: 'user', content: rulesText() }, ...contextTurns()], {
+    /* 一度に送れるのは全部で256KiBまで。役割と台帳の説明を先に量り、残りを会話に充てる（日本語は1字3バイトで見積もる）。 */
+    const rules = rulesText();
+    const spare = Math.floor((250000 - new TextEncoder().encode(rules).length) / 3);
+    const ctx = contextTurns(Math.max(3000, Math.min(60000, spare)));
+    if (ctx.cut) node.before(h('p', { class: 'fine ctx-note', text: 'メッセージが長いため、中ほどを省いて送りました。' }));
+    const res = await sample([{ role: 'user', content: rules }, ...ctx.list], {
       cache: false, signal: ctl.signal, modelTier: pickTier(lastUser ? lastUser.content : '', 'talk'),
       onText: ({ text }) => {
-        if (S.presence === 'thinking') setPresence('writing');
+        if (P.work === 'thinking') setWork('writing');
         latest = splitLedger(text, true).body;
         if (latest && !frame) frame = requestAnimationFrame(paint);
       },
     });
     if (frame) cancelAnimationFrame(frame);
     const parts = splitLedger(res.text, false);
-    const done = applyActions(parseActions(parts.raw));
-    const turn = { role: 'assistant', content: parts.body || '台帳を更新します。', at: Date.now() };
+    const acts = parseActions(parts.raw);
+    const { done, missed } = applyActions(acts);
+    const turn = { role: 'assistant', content: parts.body || (done.length ? '台帳を更新します。' : '返答の本文がありませんでした。'), at: Date.now() };
     if (res.truncated) turn.cut = true;
     if (res.modelTierApplied === 'complex') turn.tier = 'complex';
     if (done.length) turn.acts = done.map((a) => ({ label: a.label }));
+    /* 更新のブロックが付いていたのに反映できなかったときは、その旨を残す（-1 は読み取れなかった場合） */
+    if (parts.raw != null && !acts.length) turn.miss = -1; else if (missed) turn.miss = missed;
     S.turns.push(turn);
     const stick = nearEnd();
     node.replaceWith(turnEl(turn, done));
@@ -954,7 +1132,7 @@ async function answer() {
     if (code !== 'cancelled') { noteFailure(e); log.append(errLine(e, retryAnswer)); }
     toEnd(); Store.saveTalk();
   } finally {
-    S.busy = false; S.ctl = null; restPresence(); updateComposer(); updateTools();
+    S.busy = false; S.ctl = null; setWork('idle'); updateComposer(); updateTools();
   }
 }
 function retryAnswer() {
@@ -962,16 +1140,31 @@ function retryAnswer() {
   renderLog();
   if (S.turns.length) answer();
 }
+const hasStatus = (s) => typeof s === 'string' && Object.prototype.hasOwnProperty.call(STATUS, s);
+function findProject(a) {
+  const id = String(a.id == null ? '' : a.id).trim();
+  const bare = id.replace(/^id\s*[:：]\s*/i, '');
+  const byId = S.projects.find((x) => x.id === id) || S.projects.find((x) => x.id === bare);
+  if (byId) return byId;
+  /* idが合わないときは、名称がちょうど1件に当たる場合だけ、その案件とみなす */
+  for (const n of [a.name, bare]) {
+    if (typeof n !== 'string' || !n.trim()) continue;
+    const hit = S.projects.filter((x) => x.name === n.trim());
+    if (hit.length === 1) return hit[0];
+  }
+  return null;
+}
+/* 返り値の missed は、反映できなかった指示の数（案件が見つからない、形が違う、など） */
 function applyActions(list) {
-  const done = [];
+  const done = []; let missed = Math.max(0, list.length - 8);
   for (const a of list.slice(0, 8)) {
-    if (!a || typeof a !== 'object') continue;
+    if (!a || typeof a !== 'object') { missed++; continue; }
     if (a.op === 'update') {
-      const p = S.projects.find((x) => x.id === String(a.id));
-      if (!p) continue;
+      const p = findProject(a);
+      if (!p) { missed++; continue; }
       const before = { status: p.status, state: p.state, next: p.next, asOf: p.asOf, updatedAt: p.updatedAt };
       let changed = false;
-      if (STATUS[a.status] && a.status !== p.status) { p.status = a.status; changed = true; }
+      if (hasStatus(a.status) && a.status !== p.status) { p.status = a.status; changed = true; }
       if (typeof a.state === 'string' && a.state.trim()) { p.state = clip(a.state, 400); changed = true; }
       if (typeof a.next === 'string' && a.next.trim()) { p.next = clip(a.next, 400); changed = true; }
       if (!changed) continue;
@@ -979,22 +1172,21 @@ function applyActions(list) {
       const id = p.id;
       done.push({ label: '台帳を更新しました：' + p.name, undo: () => { const q = S.projects.find((x) => x.id === id); if (q) { Object.assign(q, before); Store.saveProject(q); } } });
     } else if (a.op === 'add') {
-      if (typeof a.name !== 'string' || !a.name.trim()) continue;
+      if (typeof a.name !== 'string' || !a.name.trim()) { missed++; continue; }
       const p = newProject({
-        name: clip(a.name, 60), kind: a.kind === 'personal' ? 'personal' : 'work', status: STATUS[a.status] ? a.status : 'spec',
+        name: clip(a.name, 60), kind: a.kind === 'personal' ? 'personal' : 'work', status: hasStatus(a.status) ? a.status : 'spec',
         summary: typeof a.summary === 'string' ? clip(a.summary, 400) : '', next: typeof a.next === 'string' ? clip(a.next, 400) : '',
       });
       S.projects.push(p); Store.saveProject(p);
       done.push({ label: '台帳に追加しました：' + p.name, undo: () => { S.projects = S.projects.filter((x) => x.id !== p.id); Store.deleteProject(p.id); } });
     } else if (a.op === 'remember') {
-      if (typeof a.text !== 'string' || !a.text.trim()) continue;
-      const m = { id: uid('m'), text: clip(a.text, 300), at: Date.now() };
-      S.memory.push(m); Store.saveDesk();
-      done.push({ label: '覚えました：' + m.text, undo: () => { S.memory = S.memory.filter((x) => x.id !== m.id); Store.saveDesk(); } });
-    }
+      if (typeof a.text !== 'string' || !a.text.trim()) { missed++; continue; }
+      const m = addMemory(a.text);
+      done.push({ label: '覚えました：' + m.text, undo: () => dropMemory(m.id) });
+    } else missed++;
   }
   if (done.length) { refreshGreeting(); if (S.tab === 'ledger') renderLedger(); }
-  return done;
+  return { done, missed };
 }
 function newProject(f) {
   const now = Date.now();
@@ -1008,26 +1200,35 @@ function speakable(text) {
   return String(text).replace(/```[\s\S]*?```/g, 'コードは画面に表示しています。').replace(/^\s*\|.*\|\s*$/gm, '')
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').replace(/[#*_`>]/g, '').replace(/\n{2,}/g, '\n').trim();
 }
+/* 端末の音声を使うのは、Claudeの読み上げがこの表示に無いときだけ。利用者が読み上げをオフにした場合の代わりには使わない。 */
 function unlockDeviceVoice() {
-  if (deviceUnlocked || S.caps.tts || !S.prefs.voiceOn || !S.prefs.deviceVoice || !deviceVoiceOK()) return;
+  if (deviceUnlocked || S.caps.tts !== null || !S.prefs.voiceOn || !S.prefs.deviceVoice || !deviceVoiceOK()) return;
   try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; window.speechSynthesis.speak(u); deviceUnlocked = true; } catch (e) { /* 鳴らせない表示 */ }
 }
+let voiceRun = 0; /* 端末の読み上げの通し番号。新しい読み上げや停止のたびに進め、古い読み上げの続きを無効にする。 */
 function deviceSpeak(text) {
+  const run = ++voiceRun;
+  const end = () => { if (run === voiceRun) setSpeaking(false); };
   try {
     const ss = window.speechSynthesis; ss.cancel();
     const parts = text.match(/[^。！？\n]+[。！？]?/g) || [text];
-    let i = 0; setPresence('speaking');
+    let i = 0; setSpeaking(true);
     const next = () => {
-      if (i >= parts.length || S.presence !== 'speaking') { if (S.presence === 'speaking') setPresence('idle'); return; }
+      if (run !== voiceRun) return;
+      if (i >= parts.length) { end(); return; }
       const u = new SpeechSynthesisUtterance(parts[i++]); u.lang = 'ja-JP'; u.rate = 1.05;
-      u.onend = next; u.onerror = () => { if (S.presence === 'speaking') setPresence('idle'); };
+      u.onend = next; u.onerror = end;
       ss.speak(u);
     };
     next();
-  } catch (e) { if (S.presence === 'speaking') setPresence('idle'); }
+  } catch (e) { end(); }
+}
+function ttsRefused() {
+  if (S.ttsOff) return;
+  S.ttsOff = true; setSpeaking(false); updateVoiceUI();
 }
 async function speak(text, force) {
-  if (!force && !S.prefs.voiceOn) return;
+  if (S.ttsOff || (!force && !S.prefs.voiceOn)) return;
   const plain = speakable(text).slice(0, 2600);
   if (!plain) return;
   const tts = S.caps.tts;
@@ -1036,18 +1237,20 @@ async function speak(text, force) {
     const opts = { voice: S.prefs.voice || 'buttery' };
     if (ttsLangs && ttsLangs.includes('ja')) opts.language = 'ja';
     try { await tts.speak(lines, opts); }
-    catch (e) { if (e && (e.code === 'not_granted' || e.code === 'unavailable')) { S.caps.tts = null; updateVoiceUI(); } }
-  } else if ((force || S.prefs.deviceVoice) && deviceVoiceOK()) deviceSpeak(plain);
+    catch (e) { if (e && (e.code === 'not_granted' || e.code === 'unavailable')) ttsRefused(); }
+  } else if (tts === null && (force || S.prefs.deviceVoice) && deviceVoiceOK()) deviceSpeak(plain);
 }
-function stopSpeaking() {
-  if (S.caps.tts) S.caps.tts.stop().catch(() => {});
+function stopSpeaking(sure) {
+  voiceRun++;
+  /* Claudeの読み上げ：ボタンで止めるとき（sure）は必ず止める。表示は、止まった知らせが届いてから戻す。 */
+  if (S.caps.tts) { if (sure || P.speaking) S.caps.tts.stop().catch(() => {}); return; }
   if (deviceVoiceOK()) { try { window.speechSynthesis.cancel(); } catch (e) { /* 無視 */ } }
-  if (S.presence === 'speaking') setPresence(S.busy ? 'thinking' : 'idle');
+  setSpeaking(false);
 }
 function wireTts(t) {
-  t.onState(({ state }) => {
-    if (state === 'speaking' || state === 'starting') setPresence('speaking');
-    else if (state === 'idle' && S.presence === 'speaking') setPresence(S.busy ? 'thinking' : 'idle');
+  t.onState(({ state, reason }) => {
+    setSpeaking(state !== 'idle');
+    if (state === 'idle' && (reason === 'not_granted' || reason === 'unavailable')) ttsRefused();
   });
   if (typeof t.languages === 'function') t.languages().then((l) => { ttsLangs = l; }, () => {});
 }
@@ -1059,8 +1262,8 @@ function wireDictation(d) {
     const on = state !== 'idle';
     mic.setAttribute('aria-pressed', on ? 'true' : 'false'); mic.classList.toggle('on', on);
     mic.setAttribute('aria-label', on ? '音声入力を終える' : '音声で入力する');
-    if (on) setPresence('listening');
-    else { $('#partial').textContent = ''; if (S.presence === 'listening') setPresence(S.busy ? 'thinking' : 'idle'); }
+    setListening(on);
+    if (!on) $('#partial').textContent = '';
     if (!on && (reason === 'not_granted' || reason === 'unavailable')) mic.hidden = true;
     if (!on && reason === 'rate_limited') toast('音声入力が混み合っています。少し待ってください。');
   });
@@ -1070,20 +1273,24 @@ function wireDictation(d) {
   });
 }
 function updateVoiceUI() {
-  const tts = !!S.caps.tts; const dev = !tts && deviceVoiceOK();
+  const tts = !!S.caps.tts && !S.ttsOff; const dev = S.caps.tts === null && deviceVoiceOK();
   $('#set-voice-row').hidden = !tts; $('#set-voicekind-row').hidden = !tts; $('#set-device-row').hidden = !dev;
   $('#voice-test').hidden = !(tts || dev);
   const canToggle = tts || (dev && S.prefs.deviceVoice);
   const tg = $('#voice-toggle'); tg.hidden = !canToggle;
   tg.setAttribute('aria-pressed', S.prefs.voiceOn && canToggle ? 'true' : 'false');
   const mic = S.caps.dictation ? 'マイクのボタンで音声入力ができます。' : '音声で入力するときは、キーボードのマイクを使ってください。';
-  $('#voice-note').textContent = (S.caps.tts === undefined ? '' : tts ? '' : dev ? '' : 'この表示では読み上げは使えません。') + (S.caps.dictation === undefined ? '' : mic);
+  const off = S.ttsOff ? '読み上げはオフになっています。ページのアクセス許可で変えられます。' : 'この表示では読み上げは使えません。';
+  $('#voice-note').textContent = (S.caps.tts === undefined ? '' : tts ? '' : dev ? '' : off) + (S.caps.dictation === undefined ? '' : mic);
 }
 
 /* ---------- 台帳 ---------- */
 function lamp(s) { return h('span', { class: 'lamp', data: { s }, 'aria-hidden': 'true' }); }
 function renderLedger() {
-  const root = $('#ledger-body'); const keep = root.scrollTop; root.textContent = '';
+  const root = $('#ledger-body'); const keep = root.scrollTop;
+  /* 描き直しても、キーボードの位置（フォーカス）を同じ項目に戻す */
+  const focusKey = root.contains(document.activeElement) ? (document.activeElement.dataset.key || '') : '';
+  root.textContent = '';
   const byKind = S.projects.filter((p) => S.filterKind === 'all' || p.kind === S.filterKind);
   const list = byKind.filter((p) => !S.filterStatus || p.status === S.filterStatus);
 
@@ -1092,8 +1299,9 @@ function renderLedger() {
     h('p', { class: 'fine', text: S.loaded ? S.projects.length + '件' : '読み込んでいます' }),
   ));
   root.append(h('div', { class: 'btn-row' },
-    h('button', { type: 'button', class: 'btn primary', text: S.reviewing ? '見ています' : '全体を見てもらう', disabled: S.reviewing || !S.projects.length || S.caps.sample === null || S.denied, onclick: askReview }),
-    h('button', { type: 'button', class: 'btn', text: '案件を追加', onclick: () => openProject(null) }),
+    h('button', { type: 'button', class: 'btn primary', data: { key: 'review' }, text: S.reviewing ? '見ています' : '全体を見てもらう', disabled: S.reviewing || !S.projects.length || S.caps.sample === null || S.denied, onclick: askReview }),
+    /* 読み込みが済むまでは追加できない（保存先が決まる前に足した案件が消えないように） */
+    h('button', { type: 'button', class: 'btn', data: { key: 'add' }, text: '案件を追加', disabled: !S.loaded, onclick: () => openProject(null) }),
   ));
 
   if (S.reviewing) root.append(h('div', { class: 'note' }, h('h3', { class: 'sec-title', text: '所見' }), h('div', { class: 'md', id: 'review-live' }, h('p', { class: 'wait', text: '台帳を見ています' }))));
@@ -1109,7 +1317,7 @@ function renderLedger() {
   if (S.projects.length) {
     const kinds = h('div', { class: 'filters', role: 'group', 'aria-label': '区分で絞る' },
       [['all', 'すべて'], ['work', '会社'], ['personal', '個人']].map(([k, label]) => h('button', {
-        type: 'button', class: 'chip', text: label, 'aria-pressed': S.filterKind === k ? 'true' : 'false',
+        type: 'button', class: 'chip', data: { key: 'kind:' + k }, text: label, 'aria-pressed': S.filterKind === k ? 'true' : 'false',
         onclick: () => { S.filterKind = k; renderLedger(); },
       })));
     const stats = h('div', { class: 'filters', role: 'group', 'aria-label': '状態で絞る' },
@@ -1117,7 +1325,7 @@ function renderLedger() {
         const n = byKind.filter((p) => p.status === s).length;
         if (!n && S.filterStatus !== s) return null;
         return h('button', {
-          type: 'button', class: 'chip', 'aria-pressed': S.filterStatus === s ? 'true' : 'false',
+          type: 'button', class: 'chip', data: { key: 'status:' + s }, 'aria-pressed': S.filterStatus === s ? 'true' : 'false',
           onclick: () => { S.filterStatus = S.filterStatus === s ? null : s; renderLedger(); },
         }, lamp(s), STATUS[s].label + ' ' + n);
       }));
@@ -1129,9 +1337,9 @@ function renderLedger() {
   else if (!list.length) root.append(h('p', { class: 'empty', text: 'この条件に合う案件はありません。' }));
   else {
     root.append(h('div', { class: 'ann' }, list.map((p) => h('button', {
-      type: 'button', class: 'tile', data: { status: p.status }, onclick: () => openProject(p.id),
+      type: 'button', class: 'tile', data: { status: p.status, key: 'tile:' + p.id }, onclick: () => openProject(p.id),
     }, h('span', { class: 'nm', text: p.name }), h('span', { class: 'st' }, lamp(p.status), (STATUS[p.status] || STATUS.spec).label)))));
-    root.append(h('div', { class: 'sheet rows' }, list.map((p) => h('button', { type: 'button', class: 'row', onclick: () => openProject(p.id) },
+    root.append(h('div', { class: 'sheet rows' }, list.map((p) => h('button', { type: 'button', class: 'row', data: { key: 'row:' + p.id }, onclick: () => openProject(p.id) },
       h('span', { class: 'hd' }, h('span', { class: 'nm', text: p.name }), h('span', { class: 'st' }, lamp(p.status), (STATUS[p.status] || STATUS.spec).label)),
       p.state ? h('span', { class: 'kv' }, h('span', { class: 'k', text: '現状' }), p.state) : null,
       h('span', { class: 'kv' }, h('span', { class: 'k', text: '次の一手' }), p.next || '未記入'),
@@ -1139,6 +1347,12 @@ function renderLedger() {
     ))));
   }
   root.scrollTop = keep;
+  refocus(root, focusKey);
+}
+function refocus(root, key) {
+  if (!key) return;
+  const el = [...root.querySelectorAll('[data-key]')].find((n) => n.dataset.key === key);
+  if (el && !el.disabled) el.focus();
 }
 function reviewPrompt() {
   const name = S.prefs.assistantName || 'ジャービス'; const you = S.prefs.userName || '井上さん';
@@ -1163,27 +1377,31 @@ function reviewPrompt() {
 const BUSY_TEXT = '返答の途中です。終わってからもう一度押してください。';
 async function askReview() {
   if (S.busy) { toast(BUSY_TEXT); return; }
-  S.busy = true; S.reviewing = true; S.reviewError = null; updateComposer(); renderLedger(); setPresence('thinking');
+  S.busy = true; S.reviewing = true; S.reviewError = null; updateComposer(); renderLedger(); setWork('thinking');
   const ctl = new AbortController(); S.ctl = ctl;
   try {
     const sample = await waitCap('sample');
     if (!sample) throw { code: 'no_claude' };
     const res = await sample(reviewPrompt(), {
       cache: false, signal: ctl.signal, modelTier: pickTier('', 'review'),
-      onText: ({ text }) => { if (S.presence === 'thinking') setPresence('writing'); const n = $('#review-live'); if (n) n.innerHTML = md(mend(text)); },
+      onText: ({ text }) => { if (P.work === 'thinking') setWork('writing'); const n = $('#review-live'); if (n) n.innerHTML = md(mend(text)); },
     });
-    S.prefs.review = { text: res.text.trim(), at: Date.now() }; Store.saveDesk();
+    putPrefs({ review: { text: res.text.trim(), at: Date.now() } });
   } catch (e) {
     if (!e || e.code !== 'cancelled') { S.reviewError = e || { code: 'upstream_error' }; noteFailure(e); }
   } finally {
-    S.busy = false; S.reviewing = false; S.ctl = null; restPresence(); updateComposer(); renderLedger();
+    S.busy = false; S.reviewing = false; S.ctl = null; setWork('idle'); updateComposer(); renderLedger();
   }
 }
 
 /* 案件の編集 */
-let editing = null;
+let editing = null; let formBase = ''; let opener = '';
+const readProjectForm = () => ({ name: $('#pj-name').value.trim(), status: $('#pj-status').value, kind: $('#pj-kind').value, summary: $('#pj-summary').value.trim(), state: $('#pj-state').value.trim(), next: $('#pj-next').value.trim(), note: $('#pj-note').value.trim() });
+/* 開いたときの内容から変わっていれば、閉じる前に確かめる */
+const projectDirty = () => $('#dlg-project').open && JSON.stringify(readProjectForm()) !== formBase;
 function openProject(id) {
   const p = id ? S.projects.find((x) => x.id === id) : null;
+  const from = document.activeElement; opener = from && from.dataset && from.dataset.key ? from.dataset.key : '';
   editing = p ? p.id : null;
   $('#pj-title').textContent = p ? '案件' : '案件を追加';
   $('#pj-name').value = p ? p.name : '';
@@ -1195,14 +1413,15 @@ function openProject(id) {
   $('#pj-note').value = p ? (p.note || '') : '';
   $('#pj-meta').textContent = p ? '記載日 ' + (p.asOf || '不明') : '';
   $('#pj-delete').hidden = !p;
+  formBase = JSON.stringify(readProjectForm());
   openDialog($('#dlg-project'));
   requestAnimationFrame(() => document.querySelectorAll('#dlg-project textarea').forEach(fitField));
 }
 function fitField(t) { t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight + 3, 260) + 'px'; }
 function saveProjectForm() {
-  const name = $('#pj-name').value.trim();
-  if (!name) { $('#pj-name').focus(); toast('名称を入れてください。'); return null; }
-  const f = { name: clip(name, 60), status: $('#pj-status').value, kind: $('#pj-kind').value, summary: $('#pj-summary').value.trim(), state: $('#pj-state').value.trim(), next: $('#pj-next').value.trim(), note: $('#pj-note').value.trim() };
+  const f = readProjectForm();
+  if (!f.name) { $('#pj-name').focus(); toast('名称を入れてください。'); return null; }
+  f.name = clip(f.name, 60);
   let p = editing ? S.projects.find((x) => x.id === editing) : null;
   if (p) {
     const moved = p.status !== f.status || p.state !== f.state || p.next !== f.next;
@@ -1262,14 +1481,14 @@ function paintOrderBody() { const n = $('#order-doc'); if (n && S.openOrder) n.i
 async function runOrder(order, input, isNew) {
   if (S.busy) { toast(BUSY_TEXT); return; }
   const backup = { body: order.body, title: order.title, cut: order.cut };
-  S.busy = true; S.drafting = true; S.orderError = null; S.openOrder = order; order.body = ''; updateComposer(); renderOrders(); setPresence('thinking');
+  S.busy = true; S.drafting = true; S.orderError = null; S.openOrder = order; order.body = ''; updateComposer(); renderOrders(); setWork('thinking');
   const ctl = new AbortController(); S.ctl = ctl; let frame = 0;
   try {
     const sample = await waitCap('sample');
     if (!sample) throw { code: 'no_claude' };
     const res = await sample(input, {
       cache: false, signal: ctl.signal, modelTier: pickTier(order.brief || '', 'order'),
-      onText: ({ text }) => { if (S.presence === 'thinking') setPresence('writing'); order.body = text; if (!frame) frame = requestAnimationFrame(() => { frame = 0; paintOrderBody(); }); },
+      onText: ({ text }) => { if (P.work === 'thinking') setWork('writing'); order.body = text; if (!frame) frame = requestAnimationFrame(() => { frame = 0; paintOrderBody(); }); },
     });
     order.body = cleanDoc(res.text); order.title = titleOf(order.body) || clip(order.brief || '発注書', 30);
     order.cut = !!res.truncated; order.updatedAt = Date.now();
@@ -1281,7 +1500,7 @@ async function runOrder(order, input, isNew) {
     if (!e || e.code !== 'cancelled') { S.orderError = e || { code: 'upstream_error' }; noteFailure(e); }
   } finally {
     if (frame) cancelAnimationFrame(frame);
-    S.busy = false; S.drafting = false; S.ctl = null; restPresence(); updateComposer(); renderOrders();
+    S.busy = false; S.drafting = false; S.ctl = null; setWork('idle'); updateComposer(); renderOrders();
   }
 }
 function makeOrder(brief, projectId) {
@@ -1305,7 +1524,11 @@ function orderFromTalk() {
   const you = S.prefs.userName || '井上さん'; const name = S.prefs.assistantName || 'ジャービス';
   const brief = '次の相談の記録から、ここで固まった作業を発注書にしてください。決まっていないことは未確認事項に回してください。\n\n' +
     turns.map((t) => (t.role === 'assistant' ? name : you) + '：' + t.content.slice(0, 1500)).join('\n\n');
-  makeOrder(brief, S.focus || '');
+  /* すぐには作らず、発注の画面に入れて見せる（発注先と段階の指定を確かめてから作れるように） */
+  S.form.brief = brief; S.form.projectId = S.focus || ''; S.openOrder = null; S.orderError = null;
+  go('orders');
+  $('#orders-body').scrollTop = 0;
+  toast('相談の内容を依頼欄に入れました。発注先を確かめて「発注書を作る」を押してください。');
 }
 function renderOrders() {
   const root = $('#orders-body'); const keep = root.scrollTop; root.textContent = '';
@@ -1362,7 +1585,7 @@ function renderOrders() {
   const sel = h('select', { id: 'od-project', onchange: (e) => { S.form.projectId = e.target.value; } },
     h('option', { value: '', text: '指定しない' }), S.projects.map((p) => h('option', { value: p.id, text: p.name })));
   sel.value = S.projects.some((p) => p.id === S.form.projectId) ? S.form.projectId : '';
-  const tgt = h('select', { id: 'od-target', onchange: (e) => { S.form.target = e.target.value; renderOrders(); } }, TARGETS.map((t) => h('option', { value: t, text: t })));
+  const tgt = h('select', { id: 'od-target', onchange: (e) => { S.form.target = e.target.value; renderOrders(); const again = $('#od-target'); if (again) again.focus(); } }, TARGETS.map((t) => h('option', { value: t, text: t })));
   tgt.value = S.form.target;
   const brief = h('textarea', { id: 'od-brief', rows: 5, placeholder: '作らせたいこと、直させたいことを書く。箇条書きでも、話し言葉でも構いません。', oninput: (e) => { S.form.brief = e.target.value; } });
   brief.value = S.form.brief;
@@ -1375,7 +1598,7 @@ function renderOrders() {
     ),
     h('div', { class: 'f' }, h('label', { for: 'od-brief', text: '依頼の内容' }), brief),
     S.form.target === 'Microsoft 365 Copilot' ? null : h('label', { class: 'check' }, staged, h('span', { text: '段階ごとに止めて報告させる' })),
-    h('div', { class: 'btn-row' }, h('button', { type: 'button', class: 'btn primary', text: '発注書を作る', disabled: off, onclick: () => {
+    h('div', { class: 'btn-row' }, h('button', { type: 'button', class: 'btn primary', text: '発注書を作る', disabled: off || !S.loaded, onclick: () => {
       const v = brief.value.trim(); if (!v) { brief.focus(); toast('依頼の内容を書いてください。'); return; }
       S.form.brief = v; makeOrder(v, sel.value);
     } })),
@@ -1396,23 +1619,95 @@ function renderMemory() {
   const ul = $('#mem-list'); ul.textContent = '';
   if (!S.memory.length) { ul.append(h('li', null, h('span', { class: 'fine', text: 'まだありません。' }))); return; }
   for (const m of S.memory) ul.append(h('li', null, h('span', { text: m.text }),
-    h('button', { type: 'button', class: 'link', text: '消す', 'aria-label': '「' + clip(m.text, 20) + '」を消す', onclick: () => { S.memory = S.memory.filter((x) => x.id !== m.id); Store.saveDesk(); renderMemory(); } })));
+    h('button', { type: 'button', class: 'link', text: '消す', 'aria-label': '「' + clip(m.text, 20) + '」を消す', onclick: () => { dropMemory(m.id); renderMemory(); } })));
 }
-function openSettings() {
-  $('#set-user').value = S.prefs.userName || ''; $('#set-name').value = S.prefs.assistantName || '';
-  $('#set-length').value = S.prefs.length || 'short'; $('#set-tier').value = S.prefs.tier || 'auto';
-  $('#set-voice').checked = !!S.prefs.voiceOn; $('#set-voicekind').value = S.prefs.voice || 'buttery'; $('#set-device').checked = !!S.prefs.deviceVoice;
+/* 設定の欄に、いまの内容を入れる。入力中の欄は書き換えない（保存先から内容が届いたときにも呼ぶ）。 */
+function fillSettings() {
+  const put = (sel, prop, v) => { const el = $(sel); if (el !== document.activeElement) el[prop] = v; };
+  put('#set-user', 'value', S.prefs.userName || ''); put('#set-name', 'value', S.prefs.assistantName || '');
+  put('#set-length', 'value', S.prefs.length || 'short'); put('#set-tier', 'value', S.prefs.tier || 'auto');
+  put('#set-voice', 'checked', !!S.prefs.voiceOn); put('#set-voicekind', 'value', S.prefs.voice || 'buttery'); put('#set-device', 'checked', !!S.prefs.deviceVoice);
   $('#export').hidden = !S.caps.downloads;
   $('#store-note').textContent = S.store === 'db' ? '台帳・会話・発注書は、このページ専用の保存先にあなた用として保存されます。ページを共有しても、ほかの人には見えません。'
-    : 'この表示では、台帳と会話はこの端末のブラウザにだけ保存されます。';
+    : S.store === 'local' ? 'この表示では、台帳と会話はこの端末のブラウザにだけ保存されます。' : '保存先を確かめています。';
   renderMemory(); updateVoiceUI();
-  openDialog($('#dlg-settings'));
 }
-function setPref(k, v) { if (S.prefs[k] === v) return; S.prefs[k] = v; Store.saveDesk(); renderHeader(); refreshGreeting(); updateVoiceUI(); }
+function openSettings() { fillSettings(); openDialog($('#dlg-settings')); }
+function setPref(k, v) { if (S.prefs[k] === v) return; putPrefs({ [k]: v }); renderHeader(); refreshGreeting(); updateVoiceUI(); }
+
+/* 書き出したファイルを読み込む。同じ案件・発注書は上書きし、いまあるほかのデータは残す。 */
+const okId = (s) => typeof s === 'string' && /^[A-Za-z0-9_-]{1,60}$/.test(s);
+const str = (s, n) => (typeof s === 'string' ? s.slice(0, n) : '');
+const num = (v, d) => (Number.isFinite(Number(v)) && v !== null && v !== '' ? Number(v) : d);
+function cleanProject(p) {
+  const now = Date.now();
+  return { id: okId(p.id) ? p.id : uid('p'), name: clip(p.name, 60), kind: p.kind === 'personal' ? 'personal' : 'work', status: hasStatus(p.status) ? p.status : 'spec',
+    summary: str(p.summary, 4000), state: str(p.state, 4000), next: str(p.next, 4000), note: str(p.note, 4000),
+    asOf: /^\d{4}-\d{2}-\d{2}$/.test(p.asOf) ? p.asOf : ymd(), order: num(p.order, 0), createdAt: num(p.createdAt, now), updatedAt: num(p.updatedAt, now) };
+}
+function cleanOrder(o) {
+  const now = Date.now();
+  const out = { id: okId(o.id) ? o.id : uid('o'), no: str(o.no, 40) || nextOrderNo(), title: clip(str(o.title, 200) || '発注書', 60), projectId: okId(o.projectId) ? o.projectId : '', projectName: str(o.projectName, 60),
+    target: TARGETS.includes(o.target) ? o.target : TARGETS[0], staged: !!o.staged, brief: str(o.brief, 20000), body: str(o.body, 60000), createdAt: num(o.createdAt, now), updatedAt: num(o.updatedAt, now) };
+  if (o.cut) out.cut = true;
+  return out;
+}
+function cleanTurn(t) {
+  const out = { role: t.role === 'assistant' ? 'assistant' : 'user', content: str(t.content, 40000), at: num(t.at, Date.now()) };
+  if (Array.isArray(t.acts)) { const acts = t.acts.filter((a) => a && typeof a.label === 'string').map((a) => ({ label: a.label.slice(0, 400) })); if (acts.length) out.acts = acts; }
+  if (t.cut) out.cut = true; if (t.stopped) out.stopped = true; if (t.tier === 'complex') out.tier = 'complex';
+  return out;
+}
+async function importFile(file) {
+  if (!file) return;
+  if (!S.loaded) { toast('読み込みが終わってから、もう一度押してください。'); return; }
+  if (S.busy) { toast(BUSY_TEXT); return; }
+  let v = null;
+  try { v = JSON.parse(await file.text()); } catch (e) { v = null; }
+  const list = (a) => (Array.isArray(a) ? a.filter((x) => x && typeof x === 'object') : []);
+  const ps = v ? list(v.projects).filter((p) => typeof p.name === 'string' && p.name.trim()).slice(0, 500) : [];
+  const os = v ? list(v.orders).filter((o) => typeof o.body === 'string' && o.body.trim()).slice(0, 500) : [];
+  const ms = v ? list(v.memory).filter((m) => typeof m.text === 'string' && m.text.trim()).slice(0, 300) : [];
+  const ts = v ? list(v.turns).filter((t) => typeof t.content === 'string' && t.content).slice(-60) : [];
+  if (!ps.length && !os.length && !ms.length && !ts.length) { toast('このファイルは読み込めません。このページで書き出したファイル（.json）を選んでください。'); return; }
+  const talk = ts.length && !S.turns.length;
+  const ok = await confirmBox('案件' + ps.length + '件、発注書' + os.length + '件、覚えていること' + ms.length + '件を読み込みます。同じ案件・発注書は上書きし、いまあるほかのデータは残します。'
+    + (ts.length ? (talk ? '会話も戻します。' : '会話は、いまの相談が空のときだけ戻します（今回は戻しません）。') : ''), '読み込む');
+  if (!ok) return;
+  /* 1件ずつ、書き終わりを待ってから次へ（保存先に一度に押し寄せないように） */
+  for (const raw of ps) {
+    const p = cleanProject(raw); const i = S.projects.findIndex((x) => x.id === p.id);
+    if (i >= 0) S.projects[i] = p; else S.projects.push(p);
+    await Store.saveProject(p);
+  }
+  S.projects.sort(byOrder);
+  for (const raw of os) {
+    const o = cleanOrder(raw); const i = S.orders.findIndex((x) => x.id === o.id);
+    if (i >= 0) S.orders[i] = o; else S.orders.push(o);
+    await Store.saveOrder(o);
+  }
+  S.orders.sort(byNewest);
+  for (const m of ms) { const text = clip(m.text, 300); if (!S.memory.some((x) => x.text === text)) addMemory(text); }
+  if (talk && !S.turns.length && !S.busy) { S.turns = ts.map(cleanTurn); Store.saveTalk(); renderLog(); }
+  if (S.openOrder && !S.drafting) S.openOrder = S.orders.find((x) => x.id === S.openOrder.id) || S.openOrder;
+  refreshGreeting(); renderLedger(); if (!S.drafting) renderOrders(); renderMemory(); updateTools();
+  toast('読み込みました。');
+}
 
 /* ---------- 重ねて開く面 ---------- */
-function openDialog(d) { if (typeof d.showModal === 'function') { if (!d.open) d.showModal(); } else d.setAttribute('open', ''); }
-function closeDialog(d) { if (typeof d.close === 'function') { if (d.open) d.close(); } else d.removeAttribute('open'); }
+function openDialog(d) {
+  if (typeof d.showModal === 'function') { if (!d.open) d.showModal(); } else d.setAttribute('open', '');
+  if (!$('#toast').hidden) placeToast();
+}
+function closeDialog(d) { if (typeof d.close === 'function') { if (d.open) d.close(); } else { d.removeAttribute('open'); placeToast(); } }
+/* ×・Esc・外側タップで閉じるとき。案件の編集が残っていれば、先に確かめる。 */
+function requestClose(d) {
+  if (d.id === 'dlg-project' && projectDirty()) {
+    confirmBox('編集した内容を保存せずに閉じます。', '保存せずに閉じる').then((ok) => { if (ok) closeDialog(d); });
+    return;
+  }
+  closeDialog(d);
+}
 let confirmDone = null;
 function confirmBox(text, yes) {
   $('#cf-text').textContent = text; $('#cf-yes').textContent = yes || '削除する';
@@ -1450,23 +1745,23 @@ function wire() {
   $('#new-talk').addEventListener('click', async () => {
     if (S.busy) return;
     if (!(await confirmBox('いまの会話を消して、新しい相談を始めます。台帳と発注書は残ります。', '消して始める'))) return;
-    S.turns = []; S.focus = null; Store.saveTalk(); renderLog();
+    S.turns = []; S.focus = null; if (!Got.talk) Held.cleared = true; Store.saveTalk(); renderLog();
   });
 
   $('#open-settings').addEventListener('click', openSettings);
   $('#voice-toggle').addEventListener('click', () => {
     const on = !S.prefs.voiceOn; setPref('voiceOn', on);
-    if (on) { unlockDeviceVoice(); toast('返答を読み上げます。'); } else { stopSpeaking(); toast('読み上げを止めました。'); }
+    if (on) { unlockDeviceVoice(); toast('返答を読み上げます。'); } else { stopSpeaking(true); toast('読み上げを止めました。'); }
   });
   $('#set-user').addEventListener('change', (e) => setPref('userName', e.target.value.trim() || DEFAULT_PREFS.userName));
   $('#set-name').addEventListener('change', (e) => setPref('assistantName', e.target.value.trim() || DEFAULT_PREFS.assistantName));
   $('#set-length').addEventListener('change', (e) => setPref('length', e.target.value));
   $('#set-tier').addEventListener('change', (e) => setPref('tier', e.target.value));
-  $('#set-voice').addEventListener('change', (e) => { setPref('voiceOn', e.target.checked); if (!e.target.checked) stopSpeaking(); });
+  $('#set-voice').addEventListener('change', (e) => { setPref('voiceOn', e.target.checked); if (!e.target.checked) stopSpeaking(true); });
   $('#set-voicekind').addEventListener('change', (e) => setPref('voice', e.target.value));
-  $('#set-device').addEventListener('change', (e) => { S.prefs.deviceVoice = e.target.checked; S.prefs.voiceOn = e.target.checked; Store.saveDesk(); if (e.target.checked) unlockDeviceVoice(); else stopSpeaking(); updateVoiceUI(); });
+  $('#set-device').addEventListener('change', (e) => { putPrefs({ deviceVoice: e.target.checked, voiceOn: e.target.checked }); if (e.target.checked) unlockDeviceVoice(); else stopSpeaking(true); updateVoiceUI(); });
   $('#voice-test').addEventListener('click', () => speak((S.prefs.assistantName || 'ジャービス') + 'です。読み上げの確認です。', true));
-  const addMem = () => { const i = $('#mem-new'); const v = i.value.trim(); if (!v) { i.focus(); return; } S.memory.push({ id: uid('m'), text: clip(v, 300), at: Date.now() }); i.value = ''; Store.saveDesk(); renderMemory(); };
+  const addMem = () => { const i = $('#mem-new'); const v = i.value.trim(); if (!v) { i.focus(); return; } addMemory(v); i.value = ''; renderMemory(); };
   $('#mem-add').addEventListener('click', addMem);
   $('#mem-new').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); addMem(); } });
   $('#export').addEventListener('click', async () => {
@@ -1478,8 +1773,11 @@ function wire() {
   $('#clear-talk').addEventListener('click', async () => {
     if (S.busy) return;
     if (!(await confirmBox('会話をすべて消します。台帳と発注書は残ります。', '会話を消す'))) return;
-    S.turns = []; Store.saveTalk(); renderLog(); toast('会話を消しました。');
+    S.turns = []; if (!Got.talk) Held.cleared = true; Store.saveTalk(); renderLog(); toast('会話を消しました。');
   });
+  const pick = $('#import-file');
+  $('#import').addEventListener('click', () => { pick.value = ''; pick.click(); });
+  pick.addEventListener('change', () => { const f = pick.files && pick.files[0]; pick.value = ''; importFile(f); });
 
   document.querySelectorAll('#dlg-project textarea').forEach((t) => t.addEventListener('input', () => fitField(t)));
   const st = $('#pj-status');
@@ -1495,9 +1793,15 @@ function wire() {
   });
 
   document.querySelectorAll('dialog').forEach((d) => {
-    d.addEventListener('click', (e) => { if (e.target === d) closeDialog(d); });
-    d.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => closeDialog(d)));
+    /* 外側で押して外側で離したときだけ閉じる（入力欄で文字を選んでいて、枠の外で指を離しただけでは閉じない） */
+    let downOutside = false;
+    d.addEventListener('pointerdown', (e) => { downOutside = e.target === d; });
+    d.addEventListener('click', (e) => { const out = e.target === d && downOutside; downOutside = false; if (out) requestClose(d); });
+    d.addEventListener('cancel', (e) => { if (d.id === 'dlg-project' && projectDirty()) { e.preventDefault(); requestClose(d); } });
+    d.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => requestClose(d)));
+    d.addEventListener('close', placeToast);
   });
+  $('#dlg-project').addEventListener('close', () => { if (S.tab === 'ledger') refocus($('#ledger-body'), opener); });
   $('#cf-yes').addEventListener('click', () => { if (confirmDone) confirmDone(true); });
   $('#cf-no').addEventListener('click', () => { if (confirmDone) confirmDone(false); });
   $('#dlg-confirm').addEventListener('close', () => { if (confirmDone) confirmDone(false); });
@@ -1510,7 +1814,7 @@ async function start(saved) {
   const c = window.claude;
   if (!c || typeof c.use !== 'function') {
     S.caps = { sample: null, dictation: null, tts: null, downloads: null };
-    S.store = 'local'; loadLocal(); finishLoad(); return;
+    startLocal(); return;
   }
   const cap = (name, then) => c.use(name).then((v) => { S.caps[name] = v || null; if (v && then) then(v); }, () => { S.caps[name] = null; });
   cap('sample').then(() => { updateComposer(); renderBanner(); if (S.tab !== 'talk') showTab(S.tab); });
@@ -1523,7 +1827,7 @@ async function start(saved) {
     store = got[0]; id = got[1] ? await got[1].id() : null;
   } catch (e) { store = null; }
   if (store && id) { db = store; base = 'data/users/' + id; S.store = 'db'; startDb(); }
-  else { S.store = 'local'; loadLocal(); finishLoad(); }
+  else startLocal();
 }
 const hot = window.claude && window.claude.hot;
 if (hot && typeof hot.snapshot === 'function') { try { hot.snapshot(() => ({ draft: $('#msg').value })); } catch (e) { /* 引き継ぎなしで続ける */ } }
