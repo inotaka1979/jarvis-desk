@@ -332,7 +332,7 @@ dialog::backdrop{background:var(--shade)}
       <div class="f"><label for="set-length">返答の長さ</label><select id="set-length"><option value="short">短め</option><option value="normal">ふつう</option></select></div>
       <div class="f"><label for="set-tier">考える深さ</label><select id="set-tier"><option value="auto">自動</option><option value="quick">速い</option><option value="default">標準</option><option value="complex">じっくり</option></select></div>
     </div>
-    <p class="fine">メッセージに「じっくり考えて」「手短に」と書くと、その回だけ切り替わります。</p>
+    <p class="fine">「自動」では、内容に合わせてモデルを切り替えます。あいさつや短い確認は速いモデル、ふだんの相談は標準、比較・設計・原因の分析などはじっくり考えるモデルです。メッセージに「じっくり考えて」「手短に」と書くと、その回だけ切り替わります。</p>
 
     <div class="group">
       <h3 class="sec-title">声</h3>
@@ -819,12 +819,12 @@ const Trace = (() => {
   return { set(m) { mode = m; kick(); } };
 })();
 /* 「考えている／書いている」「聞いている」「話している」は別々に持つ。読み上げを止めるボタンは、読み上げが続いている間は必ず出す。 */
-const P = { work: 'idle', speaking: false, listening: false };
+const P = { work: 'idle', speaking: false, listening: false, deep: false };
 function showPresence() {
   const p = P.work !== 'idle' ? P.work : P.listening ? 'listening' : P.speaking ? 'speaking' : 'idle';
   if (S.presence !== p) {
     S.presence = p;
-    $('#presence-text').textContent = PRESENCE[p] || PRESENCE.idle;
+    $('#presence-text').textContent = p === 'thinking' && P.deep ? 'じっくり考えています' : (PRESENCE[p] || PRESENCE.idle);
     $('#presence').dataset.state = p;
     Trace.set(p);
   }
@@ -865,17 +865,44 @@ function waitCap(name) {
     tick();
   });
 }
+/* 「考える深さ」が自動のときは、内容でモデルを選ぶ。
+   速い：あいさつ・お礼・短い確認。標準：ふだんの相談や進捗の報告。じっくり：比較・設計・原因の分析など、考える量が多いもの。
+   設定で深さを固定しているときはそれに従い、メッセージに「じっくり考えて」「手短に」とあればその回だけ切り替える。 */
+const DEEP_RE = /比較|検討|分析|解析|設計|方針|戦略|原因|対策|トレードオフ|リスク|見積|計画|ロードマップ|アーキテクチャ|レビュー|評価|妥当|最適|メリット|デメリット|優先|採算|コスト|投資|事業|仕様|要件|不具合|故障|品質|歩留|安全|溶湯|爆発|高圧/g;
+const THINK_RE = /なぜ|どうして|どうすれば|どうやって|どうし|どう思|どちら|どっち|べき|方法|理由|案|アイデア|考え|意見|説明|まとめ|整理|提案|相談|いい[?？か]|大丈夫|問題/;
+const REPORT_RE = /終わ|完了|済|決め|決ま|決定|変更|追加|覚えて|報告|進捗|保留|中止|再開|始め|着手|更新/;
+const LIGHT_RE = /^(ありがと|了解|承知|おはよう|こんにち|こんばん|お疲れ|おつかれ|ok|オーケー|わかりました|分かりました|助かり|なるほど|いいね|そうですね|よろしく)/i;
+const YES_RE = /^(はい|うん|ええ|お願い|それで|進めて|やって|頼)/;
+const MORE_RE = /詳しく|続き|続けて|つづ|もっと|さらに|掘り下げ|深掘|具体的/;
+/* 込み入り具合の目安：考える種類の言葉の数に、長さ・行数・コードや表・問いの数を足す */
+function depthScore(text) {
+  const hits = new Set(text.match(DEEP_RE) || []).size;
+  const lines = text.split('\n').filter((l) => l.trim()).length;
+  return hits + (text.length >= 600 ? 2 : text.length >= 250 ? 1 : 0) + (lines >= 6 ? 1 : 0)
+    + (/```|^\s*\|.+\|\s*$/m.test(text) ? 1 : 0) + ((text.match(/[?？]/g) || []).length >= 2 ? 1 : 0);
+}
 function pickTier(text, purpose) {
+  text = String(text || '');
   const pref = S.prefs.tier && S.prefs.tier !== 'auto' ? S.prefs.tier : '';
-  /* 所見と発注書は、文面の言葉では切り替えない（依頼文に「ざっくり」とあっても速いモデルにしない） */
-  if (purpose !== 'talk') return pref || 'default';
+  const score = depthScore(text);
+  if (purpose !== 'talk') {
+    /* 所見と発注書は、文面の「ざっくり」などでは切り替えない。自動では速いモデルに任せず、込み入っていればじっくり考えるモデルで書く。 */
+    if (pref) return pref;
+    if (purpose === 'order') return score >= 3 ? 'complex' : 'default';
+    return S.projects.length >= 15 ? 'complex' : 'default';
+  }
   if (/じっくり|深く考え|徹底的|多角的/.test(text)) return 'complex';
   if (/手短に|ひとことで|一言で|ざっくり/.test(text)) return 'quick';
   if (pref) return pref;
-  /* 速いモデルに任せるのは、短いあいさつやお礼だけ。「はい」「続けて」のような返事は、前の返答と同じ深さで答える。 */
-  if (text.length <= 12 && /^(ありがと|了解|承知|おはよう|こんにち|こんばん|お疲れ|おつかれ|ok|オーケー|わかりました|分かりました|助かり)/i.test(text)) return 'quick';
-  const prev = [...S.turns].reverse().find((t) => t.role === 'assistant');
-  if (text.length <= 12 && prev && prev.tier === 'complex') return 'complex';
+  if (score >= 3) return 'complex';
+  const len = text.length;
+  /* 「はい」「続けて」「2点目を詳しく」のような返事は、前の返答と同じ深さで答える（速いモデルには落とさない） */
+  if (len <= 30 && (YES_RE.test(text) || MORE_RE.test(text))) {
+    const prev = [...S.turns].reverse().find((t) => t.role === 'assistant');
+    return prev && prev.tier === 'complex' ? 'complex' : 'default';
+  }
+  if (len <= 20 && LIGHT_RE.test(text)) return 'quick';
+  if (len <= 40 && score === 0 && !THINK_RE.test(text) && !REPORT_RE.test(text)) return 'quick';
   return 'default';
 }
 const ERR_TEXT = {
@@ -930,6 +957,7 @@ function rulesText() {
     '- 知らないことは知らないと言う。台帳や会話にない事実・数値・ファイル名を作らない。推測は「推測ですが」と断る。',
     `- あなたはWebを見られず、${you}のPCやリポジトリにも触れない。最新情報や実物の確認が必要なときは、そう伝えて確認の仕方を提案する。`,
     '- 台帳の「記載日」が古い案件は、現状が変わっている可能性がある。断定せず、必要なら現状を尋ねる。',
+    `- 金額の決定、社外への公開や送信、個人情報の取り扱いなど重要なことは、勝手に決めて話を進めない。実行の前に必ず${you}へ確認する。発注書にも、その手前で止まって承認を待つよう書くことを勧める。`,
     '- あなたはClaudeが動かしているAIであり、尋ねられたらそう答える。',
     '',
     '# 台帳の更新',
@@ -1024,6 +1052,7 @@ function turnEl(t, live) {
   if (t.cut) n.append(h('p', { class: 'fine', text: '長くなったため途中までです。「続けて」と送ると続きを書きます。' }));
   if (t.stopped) n.append(h('p', { class: 'fine', text: '途中で止まりました。' }));
   if (t.tier === 'complex') n.append(h('p', { class: 'fine', text: 'じっくり考えて答えました。' }));
+  if (t.tier === 'quick') n.append(h('p', { class: 'fine', text: '速いモデルで答えました。' }));
   if (t.acts && t.acts.length) n.append(actsEl(t, live));
   if (t.miss) n.append(h('p', { class: 'fine', text: t.miss < 0
     ? '台帳の更新内容を読み取れなかったため、台帳は変わっていません。必要なら「台帳」で直接直してください。'
@@ -1082,9 +1111,11 @@ function send(text) {
 }
 async function answer() {
   if (S.busy) return;
-  S.busy = true; updateComposer(); setWork('thinking');
+  const lastUser = [...S.turns].reverse().find((t) => t.role === 'user');
+  const tier = pickTier(lastUser ? lastUser.content : '', 'talk');
+  S.busy = true; updateComposer(); P.deep = tier === 'complex'; setWork('thinking');
   const log = $('#log');
-  const node = h('div', { class: 'turn jv' }, h('div', { class: 'md' }, h('p', { class: 'wait', text: '考えています' })));
+  const node = h('div', { class: 'turn jv' }, h('div', { class: 'md' }, h('p', { class: 'wait', text: P.deep ? 'じっくり考えています' : '考えています' })));
   log.append(node); toEnd();
   const ctl = new AbortController(); S.ctl = ctl;
   let frame = 0; let latest = '';
@@ -1093,14 +1124,13 @@ async function answer() {
     const sample = await waitCap('sample');
     if (!sample) throw { code: 'no_claude' };
     if (ctl.signal.aborted) throw { code: 'cancelled' };
-    const lastUser = [...S.turns].reverse().find((t) => t.role === 'user');
     /* 一度に送れるのは全部で256KiBまで。役割と台帳の説明を先に量り、残りを会話に充てる（日本語は1字3バイトで見積もる）。 */
     const rules = rulesText();
     const spare = Math.floor((250000 - new TextEncoder().encode(rules).length) / 3);
     const ctx = contextTurns(Math.max(3000, Math.min(60000, spare)));
     if (ctx.cut) node.before(h('p', { class: 'fine ctx-note', text: 'メッセージが長いため、中ほどを省いて送りました。' }));
     const res = await sample([{ role: 'user', content: rules }, ...ctx.list], {
-      cache: false, signal: ctl.signal, modelTier: pickTier(lastUser ? lastUser.content : '', 'talk'),
+      cache: false, signal: ctl.signal, modelTier: tier,
       onText: ({ text }) => {
         if (P.work === 'thinking') setWork('writing');
         latest = splitLedger(text, true).body;
@@ -1113,7 +1143,7 @@ async function answer() {
     const { done, missed } = applyActions(acts);
     const turn = { role: 'assistant', content: parts.body || (done.length ? '台帳を更新します。' : '返答の本文がありませんでした。'), at: Date.now() };
     if (res.truncated) turn.cut = true;
-    if (res.modelTierApplied === 'complex') turn.tier = 'complex';
+    if (res.modelTierApplied === 'complex' || res.modelTierApplied === 'quick') turn.tier = res.modelTierApplied; /* どのモデルが答えたかを残す */
     if (done.length) turn.acts = done.map((a) => ({ label: a.label }));
     /* 更新のブロックが付いていたのに反映できなかったときは、その旨を残す（-1 は読み取れなかった場合） */
     if (parts.raw != null && !acts.length) turn.miss = -1; else if (missed) turn.miss = missed;
@@ -1132,7 +1162,7 @@ async function answer() {
     if (code !== 'cancelled') { noteFailure(e); log.append(errLine(e, retryAnswer)); }
     toEnd(); Store.saveTalk();
   } finally {
-    S.busy = false; S.ctl = null; setWork('idle'); updateComposer(); updateTools();
+    S.busy = false; S.ctl = null; P.deep = false; setWork('idle'); updateComposer(); updateTools();
   }
 }
 function retryAnswer() {
@@ -1377,20 +1407,21 @@ function reviewPrompt() {
 const BUSY_TEXT = '返答の途中です。終わってからもう一度押してください。';
 async function askReview() {
   if (S.busy) { toast(BUSY_TEXT); return; }
-  S.busy = true; S.reviewing = true; S.reviewError = null; updateComposer(); renderLedger(); setWork('thinking');
+  const tier = pickTier('', 'review');
+  S.busy = true; S.reviewing = true; S.reviewError = null; updateComposer(); renderLedger(); P.deep = tier === 'complex'; setWork('thinking');
   const ctl = new AbortController(); S.ctl = ctl;
   try {
     const sample = await waitCap('sample');
     if (!sample) throw { code: 'no_claude' };
     const res = await sample(reviewPrompt(), {
-      cache: false, signal: ctl.signal, modelTier: pickTier('', 'review'),
+      cache: false, signal: ctl.signal, modelTier: tier,
       onText: ({ text }) => { if (P.work === 'thinking') setWork('writing'); const n = $('#review-live'); if (n) n.innerHTML = md(mend(text)); },
     });
     putPrefs({ review: { text: res.text.trim(), at: Date.now() } });
   } catch (e) {
     if (!e || e.code !== 'cancelled') { S.reviewError = e || { code: 'upstream_error' }; noteFailure(e); }
   } finally {
-    S.busy = false; S.reviewing = false; S.ctl = null; setWork('idle'); updateComposer(); renderLedger();
+    S.busy = false; S.reviewing = false; S.ctl = null; P.deep = false; setWork('idle'); updateComposer(); renderLedger();
   }
 }
 
@@ -1453,7 +1484,7 @@ function orderPrompt(o, p) {
   if (copilot) rules.push(
     '- 発注先はMicrosoft 365 Copilot。リポジトリの操作やテストの実行は指示しない。渡す資料、出力の形式（Word・Excel・PowerPointなど）、確認してほしい観点を具体的に書く。',
     '- 「進め方」は番号付きの手順、「報告」は成果物の形として書く。受け入れ基準は、成果物を見て合否を判定できる形で書く。',
-    '- 制約には次を必ず入れる：資料にない内容を推測で補わない／元の資料の数値や表現を勝手に変えない／不明点は末尾に質問として挙げる。',
+    '- 制約には次を必ず入れる：資料にない内容を推測で補わない／元の資料の数値や表現を勝手に変えない／不明点は末尾に質問として挙げる／金額の決定、社外への共有や送信、個人情報の取り扱いは、行う前に確認を求める。',
   ); else rules.push(
     o.target === '社内ローカルAI'
       ? '- 発注先は社内のローカルAI（社内のGitサーバー上で自律的に作業する）。段階を小さく切り、判断が要る箇所はあらかじめ決めて書く。'
@@ -1462,7 +1493,7 @@ function orderPrompt(o, p) {
     o.staged
       ? '- 進め方は段階（S0、S1、…）に分ける。S0は現状の調査と計画だけにする。各段階の終わりに結果を報告ファイル（例：docs/S0_REPORT.md）へ書いて停止し、承認を待つよう指示する。'
       : '- 進め方は段階（S0、S1、…）に分け、最後にまとめて報告するよう指示する。',
-    '- 制約には次を必ず入れる：仕様にない判断は docs/ASSUMPTIONS.md に日付・理由・影響範囲を記録する／推測で値や引数を決めない／合格条件を緩めて合格にしない／既存の動作とテストを壊さない。',
+    '- 制約には次を必ず入れる：仕様にない判断は docs/ASSUMPTIONS.md に日付・理由・影響範囲を記録する／推測で値や引数を決めない／合格条件を緩めて合格にしない／既存の動作とテストを壊さない／費用が発生する操作、社外への公開や送信（公開リポジトリへのpush、デプロイ、メール、投稿など）、個人情報の取り扱い、削除など取り返しのつかない操作は、実行の前に停止して承認を待つ。',
   );
   return [
     `あなたは「${name}」。${you}の発注係として、下の依頼を発注先にそのまま渡せる発注書にまとめてください。`,
@@ -1481,13 +1512,14 @@ function paintOrderBody() { const n = $('#order-doc'); if (n && S.openOrder) n.i
 async function runOrder(order, input, isNew) {
   if (S.busy) { toast(BUSY_TEXT); return; }
   const backup = { body: order.body, title: order.title, cut: order.cut };
-  S.busy = true; S.drafting = true; S.orderError = null; S.openOrder = order; order.body = ''; updateComposer(); renderOrders(); setWork('thinking');
+  const tier = pickTier(order.brief || '', 'order');
+  S.busy = true; S.drafting = true; S.orderError = null; S.openOrder = order; order.body = ''; updateComposer(); renderOrders(); P.deep = tier === 'complex'; setWork('thinking');
   const ctl = new AbortController(); S.ctl = ctl; let frame = 0;
   try {
     const sample = await waitCap('sample');
     if (!sample) throw { code: 'no_claude' };
     const res = await sample(input, {
-      cache: false, signal: ctl.signal, modelTier: pickTier(order.brief || '', 'order'),
+      cache: false, signal: ctl.signal, modelTier: tier,
       onText: ({ text }) => { if (P.work === 'thinking') setWork('writing'); order.body = text; if (!frame) frame = requestAnimationFrame(() => { frame = 0; paintOrderBody(); }); },
     });
     order.body = cleanDoc(res.text); order.title = titleOf(order.body) || clip(order.brief || '発注書', 30);
@@ -1500,7 +1532,7 @@ async function runOrder(order, input, isNew) {
     if (!e || e.code !== 'cancelled') { S.orderError = e || { code: 'upstream_error' }; noteFailure(e); }
   } finally {
     if (frame) cancelAnimationFrame(frame);
-    S.busy = false; S.drafting = false; S.ctl = null; setWork('idle'); updateComposer(); renderOrders();
+    S.busy = false; S.drafting = false; S.ctl = null; P.deep = false; setWork('idle'); updateComposer(); renderOrders();
   }
 }
 function makeOrder(brief, projectId) {
@@ -1655,7 +1687,7 @@ function cleanOrder(o) {
 function cleanTurn(t) {
   const out = { role: t.role === 'assistant' ? 'assistant' : 'user', content: str(t.content, 40000), at: num(t.at, Date.now()) };
   if (Array.isArray(t.acts)) { const acts = t.acts.filter((a) => a && typeof a.label === 'string').map((a) => ({ label: a.label.slice(0, 400) })); if (acts.length) out.acts = acts; }
-  if (t.cut) out.cut = true; if (t.stopped) out.stopped = true; if (t.tier === 'complex') out.tier = 'complex';
+  if (t.cut) out.cut = true; if (t.stopped) out.stopped = true; if (t.tier === 'complex' || t.tier === 'quick') out.tier = t.tier;
   return out;
 }
 async function importFile(file) {
