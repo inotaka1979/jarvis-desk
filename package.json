@@ -1,0 +1,11 @@
+{
+  "name": "jarvis-desk",
+  "private": true,
+  "description": "「ジャービス」のページ本体とテスト",
+  "scripts": {
+    "test": "node tests/run-all.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0"
+  }
+}
