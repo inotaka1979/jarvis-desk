@@ -1,0 +1,1534 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ジャービス</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@500;700&amp;display=swap" rel="stylesheet">
+<style>
+:root{
+  /* 図面の一枚。上に銘板とペンの軌跡、中央に作業面、親指の位置に3つの切り替え。本文は左揃え。 */
+  --paper:#F2F6F3;   /* 方眼紙の地 */
+  --plate:#FFFFFF;   /* 書き込み面 */
+  --ink:#13264A;     /* 製図インク */
+  --ink-2:#51627F;   /* 補足の文字 */
+  --line:#C4D5D0;    /* 罫線 */
+  --pen:#1747C9;     /* ペン青：操作できるもの */
+  --mark:#C8382C;    /* 赤ペン：所見と注意 */
+  --grid:rgba(19,38,74,.055);
+  --key-bg:#13264A; --key-fg:#FFFFFF;
+  --lamp-build:#1F9D55; --lamp-wait:#D99400; --lamp-run:#13264A; --lamp-spec:#1747C9; --lamp-hold:#93A1B5;
+  --wait-wash:#F9EED6;
+  --shade:rgba(10,20,40,.45);
+  --display:"Zen Maru Gothic","Hiragino Maru Gothic ProN","Hiragino Sans","Noto Sans JP",sans-serif;
+  --body:"Hiragino Sans","Hiragino Kaku Gothic ProN","Noto Sans JP","Yu Gothic UI","Meiryo",system-ui,sans-serif;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#0F2B57; --plate:#173A70; --ink:#EEF4FF; --ink-2:#A8C0E6; --line:#2D5290; --pen:#FFD45C; --mark:#FF8F80;
+    --grid:rgba(238,244,255,.055); --key-bg:#FFD45C; --key-fg:#0F2B57;
+    --lamp-build:#5BE08F; --lamp-wait:#FFC043; --lamp-run:#EEF4FF; --lamp-spec:#8FB8FF; --lamp-hold:#6E88B5;
+    --wait-wash:#3C4F69; --shade:rgba(3,10,26,.6);
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0F2B57; --plate:#173A70; --ink:#EEF4FF; --ink-2:#A8C0E6; --line:#2D5290; --pen:#FFD45C; --mark:#FF8F80;
+  --grid:rgba(238,244,255,.055); --key-bg:#FFD45C; --key-fg:#0F2B57;
+  --lamp-build:#5BE08F; --lamp-wait:#FFC043; --lamp-run:#EEF4FF; --lamp-spec:#8FB8FF; --lamp-hold:#6E88B5;
+  --wait-wash:#3C4F69; --shade:rgba(3,10,26,.6);
+  color-scheme:dark;
+}
+
+*,*::before,*::after{box-sizing:border-box}
+[hidden]{display:none !important}
+html,body{height:100%;margin:0}
+body{
+  background-color:var(--paper);color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.7;
+  -webkit-text-size-adjust:100%;overflow:hidden;line-break:strict;
+  background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+  background-size:24px 24px;
+}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+h1,h2,h3,p{margin:0}
+:focus-visible{outline:2.5px solid var(--pen);outline-offset:2px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.grow{flex:1}
+
+.app{height:100%;display:flex;flex-direction:column;max-width:860px;margin:0 auto}
+
+/* 銘板 */
+.head{padding:10px 16px 0;border-bottom:1.5px solid var(--ink);background:var(--paper)}
+.name-row{display:flex;align-items:center;gap:10px;min-height:44px}
+.nameplate{font-family:var(--display);font-weight:700;font-size:21px;letter-spacing:.1em;line-height:1.2;overflow-wrap:anywhere;min-width:0}
+.presence{margin-left:auto;display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-2);white-space:nowrap}
+.presence .dot{width:8px;height:8px;border-radius:50%;border:1.5px solid var(--ink-2)}
+.presence:not([data-state="idle"]) .dot{background:var(--pen);border-color:var(--pen)}
+.presence:not([data-state="idle"]){color:var(--ink)}
+.presence[data-state="speaking"]{display:none}
+.icon-btn{flex:none;width:44px;height:44px;display:inline-flex;align-items:center;justify-content:center;border:0;background:none;border-radius:10px;color:var(--ink)}
+.icon-btn[aria-pressed="true"]{color:var(--pen)}
+.icon-btn[aria-pressed="false"] .wave{display:none}
+.trace{display:block;width:100%;height:28px}
+
+.banner{margin:10px 16px 0;padding:8px 12px;border:1px solid var(--mark);border-left-width:4px;border-radius:4px;background:var(--plate);font-size:13.5px}
+
+.views{flex:1;min-height:0}
+.view{height:100%;min-height:0;display:flex;flex-direction:column}
+.scroll{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:16px 16px 28px;display:flex;flex-direction:column;gap:16px}
+
+/* 相談 */
+.log{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:18px 16px 10px;display:flex;flex-direction:column;gap:18px}
+.turn{overflow-wrap:anywhere}
+.turn.me{align-self:flex-end;max-width:86%;background:var(--plate);border:1px solid var(--line);border-radius:14px 14px 4px 14px;padding:8px 13px;white-space:pre-wrap}
+.turn.jv{padding-left:12px;border-left:2px solid var(--pen);max-width:68ch}
+.turn.hello p{font-family:var(--display);font-weight:500;font-size:17px;line-height:1.65;text-wrap:pretty}
+.wait{color:var(--ink-2)}
+.fine{font-size:12.5px;color:var(--ink-2);line-height:1.6}
+.applied{margin-top:8px;display:flex;flex-direction:column;gap:2px}
+.applied p{font-size:12.5px;color:var(--ink-2);padding-left:14px;position:relative}
+.applied p::before{content:"";position:absolute;left:0;top:.55em;width:7px;height:7px;border-radius:50%;background:var(--lamp-build)}
+.errline{border:1px solid var(--mark);border-left-width:4px;border-radius:4px;background:var(--plate);padding:8px 12px;font-size:13.5px;display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{border:1px solid var(--ink);background:var(--plate);border-radius:999px;padding:7px 14px;min-height:40px;font-size:13.5px;line-height:1.4;text-align:left}
+.chip[aria-pressed="true"]{background:var(--key-bg);color:var(--key-fg);border-color:var(--key-bg)}
+.link{border:0;background:none;padding:6px 2px;color:var(--pen);text-decoration:underline;text-underline-offset:3px;font-size:13px;min-height:32px}
+
+.composer{padding:6px 12px 10px;border-top:1px solid var(--line);background:var(--paper);display:flex;flex-direction:column;gap:4px}
+.tools{display:flex;flex-wrap:wrap;align-items:center;gap:2px 14px;padding:0 4px}
+.focus{display:inline-flex;align-items:center;gap:4px;font-size:12.5px;border:1px solid var(--pen);border-radius:999px;padding:1px 4px 1px 10px;background:var(--plate)}
+.focus button{border:0;background:none;width:28px;height:28px;border-radius:50%;line-height:1;font-size:16px}
+.partial{font-size:13px;color:var(--ink-2);padding:0 4px;min-height:0}
+.partial:empty{display:none}
+.input-row{display:flex;align-items:flex-end;gap:8px}
+.input-row textarea{flex:1;min-width:0;resize:none;border:1.5px solid var(--ink);border-radius:14px;background:var(--plate);padding:9px 13px;font-size:16px;line-height:1.5;max-height:150px}
+.key{flex:none;width:46px;height:46px;border-radius:50%;border:1.5px solid var(--key-bg);background:var(--key-bg);color:var(--key-fg);display:inline-flex;align-items:center;justify-content:center}
+.key:disabled{opacity:.4;cursor:default}
+.key.ghost{background:var(--plate);color:var(--ink);border-color:var(--ink)}
+.key.ghost.on{background:var(--mark);border-color:var(--mark);color:var(--plate)}
+
+/* 切り替え */
+.tabs{display:flex;border-top:1.5px solid var(--ink);background:var(--paper)}
+.tab{flex:1;display:flex;align-items:center;justify-content:center;min-height:52px;text-decoration:none;color:var(--ink-2);font-family:var(--display);font-weight:500;font-size:14.5px;letter-spacing:.14em;border-top:3px solid transparent;margin-top:-1.5px}
+.tab[aria-current="page"]{color:var(--ink);font-weight:700;border-top-color:var(--pen)}
+
+/* 見出しとボタン */
+.view-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px}
+.view-head h2{font-family:var(--display);font-weight:700;font-size:19px;letter-spacing:.06em;line-height:1.3}
+.sec-title{font-family:var(--display);font-weight:700;font-size:14.5px;letter-spacing:.04em}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:44px;padding:8px 16px;border-radius:10px;border:1.5px solid var(--ink);background:var(--plate);font-family:var(--display);font-weight:700;font-size:14px;line-height:1.3;text-align:center}
+.btn.primary{background:var(--key-bg);color:var(--key-fg);border-color:var(--key-bg)}
+.btn.danger{border-color:var(--mark);color:var(--mark)}
+.btn:disabled{opacity:.45;cursor:default}
+.btn-row{display:flex;flex-wrap:wrap;gap:8px}
+
+/* 台帳 */
+.note{border:1px solid var(--mark);border-left-width:4px;border-radius:4px;background:var(--plate);padding:10px 14px}
+.note .sec-title{color:var(--mark);margin-bottom:4px}
+.filters{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center}
+.filters .chip{min-height:36px;padding:5px 12px;font-size:13px;display:inline-flex;align-items:center;gap:6px}
+.ann{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:8px}
+.tile{display:flex;flex-direction:column;align-items:flex-start;gap:8px;text-align:left;padding:10px;min-height:82px;border:1px solid var(--line);border-radius:6px;background:var(--plate)}
+.tile .nm{font-family:var(--display);font-weight:700;font-size:13.5px;line-height:1.35;overflow-wrap:anywhere;text-wrap:balance}
+.tile .st{margin-top:auto;display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--ink-2);line-height:1.3}
+.tile[data-status="wait"]{background:var(--wait-wash);border-color:var(--lamp-wait)}
+.tile[data-status="wait"] .st{color:var(--ink)}
+.tile[data-status="hold"] .nm{color:var(--ink-2)}
+.lamp{--c:var(--lamp-hold);flex:none;width:10px;height:10px;border-radius:50%;border:2px solid var(--c);background:transparent}
+.lamp[data-s="build"]{--c:var(--lamp-build);background:var(--c)}
+.lamp[data-s="run"]{--c:var(--lamp-run);background:var(--c)}
+.lamp[data-s="spec"]{--c:var(--lamp-spec)}
+.lamp[data-s="wait"]{--c:var(--lamp-wait);background:var(--c);border-radius:1.5px;transform:rotate(45deg)}
+.sheet{background:var(--plate);border:1.5px solid var(--ink);border-radius:4px}
+.rows{display:flex;flex-direction:column}
+.row{display:flex;flex-direction:column;gap:3px;text-align:left;padding:12px 14px;border:0;border-top:1px solid var(--line);background:none}
+.row:first-child{border-top:0}
+.row .hd{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px}
+.row .nm{font-family:var(--display);font-weight:700;font-size:15px;line-height:1.4}
+.row .st{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-2)}
+.row .kv{font-size:13.5px;line-height:1.6}
+.row .k{display:inline-block;min-width:4.6em;color:var(--ink-2);font-size:12px}
+.row .asof{font-size:11.5px;color:var(--ink-2);font-variant-numeric:tabular-nums}
+.empty{padding:18px 14px;color:var(--ink-2);font-size:14px}
+
+/* 発注 */
+.f{display:flex;flex-direction:column;gap:4px;min-width:0}
+.f label,.f .lab{font-family:var(--display);font-weight:500;font-size:12.5px;color:var(--ink-2)}
+.f input[type="text"],.f select,.f textarea{width:100%;border:1px solid var(--ink-2);border-radius:8px;background:var(--plate);padding:9px 11px;font-size:16px;line-height:1.5}
+.f textarea{resize:vertical}
+.f2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.check{display:flex;align-items:flex-start;gap:8px;font-size:14px;line-height:1.5}
+.check input{width:20px;height:20px;margin:1px 0 0;flex:none;accent-color:var(--pen)}
+.form{display:flex;flex-direction:column;gap:12px}
+.tb{display:grid;grid-template-columns:auto 1fr;border-bottom:1.5px solid var(--ink)}
+.tb dt,.tb dd{margin:0;padding:6px 12px;border-top:1px solid var(--line);font-size:13.5px;line-height:1.5}
+.tb dt:first-of-type,.tb dd:first-of-type{border-top:0}
+.tb dt{font-family:var(--display);font-weight:500;font-size:12px;color:var(--ink-2);border-right:1px solid var(--line);white-space:nowrap;display:flex;align-items:center}
+.tb dd{font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.tb dd.ttl{font-family:var(--display);font-weight:700;font-size:16px}
+.doc{padding:14px 14px 18px}
+.src{width:100%;min-height:160px;border:1px solid var(--ink-2);border-radius:8px;background:var(--plate);padding:9px 11px;font-size:13px;line-height:1.5;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+
+/* 返答の本文 */
+.md>*:first-child{margin-top:0}
+.md>*:last-child{margin-bottom:0}
+.md p{margin:.55em 0}
+.md ul,.md ol{margin:.5em 0;padding-left:1.45em}
+.md li{margin:.2em 0}
+.md li>ul,.md li>ol{margin:.2em 0}
+.md h2,.md h3,.md h4,.md h5,.md h6{font-family:var(--display);font-weight:700;line-height:1.4;margin:1.1em 0 .35em;text-wrap:balance}
+.md h2{font-size:18px}.md h3{font-size:16px}.md h4{font-size:15px}.md h5,.md h6{font-size:14px}
+.md code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.86em;background:var(--paper);border:1px solid var(--line);border-radius:4px;padding:.05em .35em}
+.md pre{margin:.6em 0;padding:10px 12px;background:var(--paper);border:1px solid var(--line);border-radius:6px;overflow-x:auto;line-height:1.55}
+.md pre code{border:0;background:none;padding:0;font-size:12.5px;white-space:pre}
+.md blockquote{margin:.6em 0;padding-left:10px;border-left:3px solid var(--line);color:var(--ink-2)}
+.md hr{border:0;border-top:1px solid var(--line);margin:1em 0}
+.md .tbl{overflow-x:auto;margin:.6em 0}
+.md table{border-collapse:collapse;font-size:13.5px;font-variant-numeric:tabular-nums}
+.md th,.md td{border:1px solid var(--line);padding:4px 8px;text-align:left;vertical-align:top}
+.md th{font-family:var(--display);font-weight:700}
+.md a{color:var(--pen)}
+.turn.jv .md code,.turn.jv .md pre{background:var(--plate)}
+
+/* 重ねて開く面 */
+dialog{border:1.5px solid var(--ink);border-radius:10px;background:var(--paper);color:var(--ink);padding:0;width:min(560px,calc(100% - 24px));max-height:calc(100% - 32px);overflow:hidden}
+dialog[open]{display:flex;flex-direction:column}
+dialog::backdrop{background:var(--shade)}
+.dlg-head{display:flex;align-items:center;gap:8px;padding:6px 6px 6px 16px;border-bottom:1px solid var(--line)}
+.dlg-head h2{font-family:var(--display);font-weight:700;font-size:17px;letter-spacing:.06em;flex:1}
+.dlg-body{padding:14px 16px 16px;overflow-y:auto;display:flex;flex-direction:column;gap:12px;min-height:0}
+.dlg-foot{display:flex;flex-wrap:wrap;gap:8px;padding:10px 16px 14px;border-top:1px solid var(--line)}
+.group{display:flex;flex-direction:column;gap:8px;padding-top:12px;border-top:1px solid var(--line)}
+.mem{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.mem li{display:flex;align-items:flex-start;gap:6px;padding:4px 0;border-top:1px solid var(--line);font-size:14px;line-height:1.55}
+.mem li:first-child{border-top:0}
+.mem li span{flex:1;padding-top:8px;overflow-wrap:anywhere}
+.add-row{display:flex;gap:8px;align-items:flex-end}
+.toast{position:fixed;left:50%;bottom:68px;transform:translateX(-50%);max-width:calc(100% - 32px);background:var(--key-bg);color:var(--key-fg);border-radius:10px;padding:8px 14px;font-size:13.5px;line-height:1.5;z-index:5}
+
+@media (min-width:700px){
+  body{font-size:15.5px}
+  .head{padding:14px 24px 0}
+  .log{padding:22px 24px 12px}
+  .scroll{padding:22px 24px 32px}
+  .composer{padding:8px 20px 14px}
+  .ann{grid-template-columns:repeat(auto-fill,minmax(132px,1fr))}
+}
+@media (prefers-reduced-motion:no-preference){
+  .wait::after{content:"";display:inline-block;width:1.2em;text-align:left;animation:dots 1.4s steps(4,end) infinite}
+  @keyframes dots{0%{content:""}25%{content:"."}50%{content:".."}75%{content:"..."}}
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="head">
+    <div class="name-row">
+      <h1 class="nameplate" id="nameplate">ジャービス</h1>
+      <p class="presence" id="presence" data-state="idle" role="status"><span class="dot" aria-hidden="true"></span><span id="presence-text">待機中</span></p>
+      <button type="button" class="link" id="stop-voice" hidden>読み上げを止める</button>
+      <button type="button" class="icon-btn" id="voice-toggle" hidden aria-pressed="false" aria-label="返答の読み上げ">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 10v4h3l5 4V6L7 10H4z"/><path class="wave" d="M16 9a4.2 4.2 0 0 1 0 6"/><path class="wave" d="M18.6 6.4a8 8 0 0 1 0 11.2"/></svg>
+      </button>
+      <button type="button" class="icon-btn" id="open-settings" aria-label="設定を開く">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h9M19 7h1M4 17h1M11 17h9"/><circle cx="16" cy="7" r="2.6"/><circle cx="8" cy="17" r="2.6"/></svg>
+      </button>
+    </div>
+    <canvas class="trace" id="trace" aria-hidden="true"></canvas>
+  </header>
+
+  <p class="banner" id="banner" hidden></p>
+
+  <main class="views">
+    <section class="view" id="view-talk" aria-label="相談">
+      <div class="log" id="log"></div>
+      <div class="composer">
+        <div class="tools" id="tools" hidden>
+          <span class="focus" id="focus-chip" hidden><span id="focus-name"></span><button type="button" id="focus-clear" aria-label="話題の指定を外す">×</button></span>
+          <span class="grow"></span>
+          <button type="button" class="link" id="to-order">この相談を発注書にする</button>
+          <button type="button" class="link" id="new-talk">新しい相談</button>
+        </div>
+        <p class="partial" id="partial"></p>
+        <div class="input-row">
+          <button type="button" class="key ghost" id="mic" hidden aria-pressed="false" aria-label="音声で入力する">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+          </button>
+          <label class="sr" for="msg">メッセージ</label>
+          <textarea id="msg" rows="1" placeholder="話しかける" autocomplete="off"></textarea>
+          <button type="button" class="key" id="send" aria-label="送る">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+          </button>
+          <button type="button" class="key" id="stop" hidden aria-label="返答を止める">
+            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor"/></svg>
+          </button>
+        </div>
+        <p class="fine" id="talk-note" hidden></p>
+      </div>
+    </section>
+
+    <section class="view" id="view-ledger" aria-label="台帳" hidden>
+      <div class="scroll" id="ledger-body"></div>
+    </section>
+
+    <section class="view" id="view-orders" aria-label="発注" hidden>
+      <div class="scroll" id="orders-body"></div>
+    </section>
+  </main>
+
+  <nav class="tabs" aria-label="画面の切り替え">
+    <a class="tab" href="#talk" data-tab="talk">相談</a>
+    <a class="tab" href="#ledger" data-tab="ledger">台帳</a>
+    <a class="tab" href="#orders" data-tab="orders">発注</a>
+  </nav>
+</div>
+
+<p class="toast" id="toast" role="status" hidden></p>
+
+<dialog id="dlg-project" aria-labelledby="pj-title">
+  <div class="dlg-head">
+    <h2 id="pj-title">案件</h2>
+    <button type="button" class="icon-btn" data-close aria-label="閉じる"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  </div>
+  <div class="dlg-body">
+    <div class="f"><label for="pj-name">名称</label><input id="pj-name" type="text" maxlength="60" autocomplete="off"></div>
+    <div class="f2">
+      <div class="f"><label for="pj-status">状態</label><select id="pj-status"></select></div>
+      <div class="f"><label for="pj-kind">区分</label><select id="pj-kind"><option value="work">会社</option><option value="personal">個人</option></select></div>
+    </div>
+    <div class="f"><label for="pj-summary">概要</label><textarea id="pj-summary" rows="2"></textarea></div>
+    <div class="f"><label for="pj-state">現状</label><textarea id="pj-state" rows="3"></textarea></div>
+    <div class="f"><label for="pj-next">次の一手</label><textarea id="pj-next" rows="2"></textarea></div>
+    <div class="f"><label for="pj-note">メモ</label><textarea id="pj-note" rows="2"></textarea></div>
+    <div class="btn-row">
+      <button type="button" class="btn" id="pj-talk">この件を相談</button>
+      <button type="button" class="btn" id="pj-order">発注書を作る</button>
+    </div>
+    <p class="fine" id="pj-meta"></p>
+  </div>
+  <div class="dlg-foot">
+    <button type="button" class="btn danger" id="pj-delete">削除</button>
+    <span class="grow"></span>
+    <button type="button" class="btn primary" id="pj-save">保存</button>
+  </div>
+</dialog>
+
+<dialog id="dlg-settings" aria-labelledby="set-title">
+  <div class="dlg-head">
+    <h2 id="set-title">設定</h2>
+    <button type="button" class="icon-btn" data-close aria-label="閉じる"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  </div>
+  <div class="dlg-body">
+    <div class="f2">
+      <div class="f"><label for="set-user">あなたの呼び名</label><input id="set-user" type="text" maxlength="20" autocomplete="off"></div>
+      <div class="f"><label for="set-name">アシスタントの名前</label><input id="set-name" type="text" maxlength="20" autocomplete="off"></div>
+    </div>
+    <div class="f2">
+      <div class="f"><label for="set-length">返答の長さ</label><select id="set-length"><option value="short">短め</option><option value="normal">ふつう</option></select></div>
+      <div class="f"><label for="set-tier">考える深さ</label><select id="set-tier"><option value="auto">自動</option><option value="quick">速い</option><option value="default">標準</option><option value="complex">じっくり</option></select></div>
+    </div>
+    <p class="fine">メッセージに「じっくり考えて」「手短に」と書くと、その回だけ切り替わります。</p>
+
+    <div class="group">
+      <h3 class="sec-title">声</h3>
+      <label class="check" id="set-voice-row" hidden><input type="checkbox" id="set-voice"><span>返答を読み上げる</span></label>
+      <div class="f" id="set-voicekind-row" hidden><label for="set-voicekind">声の種類</label><select id="set-voicekind"><option value="buttery">なめらか</option><option value="airy">軽やか</option><option value="glassy">澄んだ声</option><option value="rounded">まろやか</option></select></div>
+      <label class="check" id="set-device-row" hidden><input type="checkbox" id="set-device"><span>端末の音声で返答を読み上げる（試験的。表示環境によっては鳴りません）</span></label>
+      <div class="btn-row"><button type="button" class="btn" id="voice-test" hidden>読み上げを試す</button></div>
+      <p class="fine" id="voice-note"></p>
+    </div>
+
+    <div class="group">
+      <h3 class="sec-title">覚えていること</h3>
+      <p class="fine">相談と発注書づくりのたびに参照します。相談の中で「覚えておいて」と言っても追加されます。</p>
+      <ul class="mem" id="mem-list"></ul>
+      <div class="add-row">
+        <div class="f grow"><label for="mem-new">追加する内容</label><input id="mem-new" type="text" maxlength="300" autocomplete="off"></div>
+        <button type="button" class="btn" id="mem-add">追加</button>
+      </div>
+    </div>
+
+    <div class="group">
+      <h3 class="sec-title">データ</h3>
+      <div class="btn-row">
+        <button type="button" class="btn" id="export" hidden>台帳と会話を書き出す</button>
+        <button type="button" class="btn danger" id="clear-talk">会話を消す</button>
+      </div>
+      <p class="fine" id="store-note"></p>
+      <p class="fine">返答はClaudeが作り、あなたのClaudeの利用枠を使います。Webの検索や、PC・リポジトリの操作はできません。</p>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="dlg-confirm" aria-labelledby="cf-text">
+  <div class="dlg-body"><p id="cf-text"></p></div>
+  <div class="dlg-foot"><span class="grow"></span><button type="button" class="btn" id="cf-no">やめる</button><button type="button" class="btn danger" id="cf-yes">削除する</button></div>
+</dialog>
+
+<script>
+(() => {
+'use strict';
+
+/* ---------- 小道具 ---------- */
+const $ = (s, r = document) => r.querySelector(s);
+function h(tag, props, ...kids) {
+  const n = document.createElement(tag);
+  if (props) for (const [k, v] of Object.entries(props)) {
+    if (v == null || v === false) continue;
+    if (k === 'class') n.className = v;
+    else if (k === 'text') n.textContent = v;
+    else if (k === 'html') n.innerHTML = v; /* md() の出力だけを渡す */
+    else if (k === 'data') Object.assign(n.dataset, v);
+    else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
+    else n.setAttribute(k, v === true ? '' : v);
+  }
+  for (const kid of kids.flat()) if (kid != null && kid !== false) n.append(kid);
+  return n;
+}
+const clip = (s, n) => { s = String(s).trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
+const uid = (p) => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+const pad = (n) => String(n).padStart(2, '0');
+const ymd = (d = new Date()) => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+
+const STATUS = {
+  wait: { label: '判断待ち' }, build: { label: '実装・検証' }, spec: { label: '構想・仕様' }, run: { label: '運用中' }, hold: { label: '保留' },
+};
+const STATUS_ORDER = ['wait', 'build', 'spec', 'run', 'hold'];
+const KIND = { work: '会社', personal: '個人' };
+const TARGETS = ['Claude Code', 'Microsoft 365 Copilot', '社内ローカルAI'];
+const PRESENCE = { idle: '待機中', listening: '聞いています', thinking: '考えています', writing: '書いています', speaking: '話しています' };
+const DEFAULT_PREFS = { assistantName: 'ジャービス', userName: '井上さん', length: 'short', tier: 'auto', voiceOn: false, voice: 'buttery', deviceVoice: false, review: null };
+
+const S = {
+  prefs: { ...DEFAULT_PREFS }, memory: [], projects: [], orders: [], turns: [],
+  tab: 'talk', focus: null, filterKind: 'all', filterStatus: null,
+  caps: { sample: undefined, dictation: undefined, tts: undefined, downloads: undefined },
+  store: 'pending', loaded: false, stale: false, dbError: false, denied: false,
+  busy: false, ctl: null, presence: 'idle',
+  openOrder: null, drafting: false, orderError: null, reviewing: false, reviewError: null,
+  form: { projectId: '', target: TARGETS[0], brief: '', staged: true },
+};
+
+/* ---------- 返答の本文を組む（Markdownの一部） ---------- */
+const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ESC[c]);
+function inline(src) {
+  const codes = [];
+  let s = esc(src).replace(/`([^`\n]+)`/g, (_, c) => { codes.push(c); return '' + (codes.length - 1) + ''; });
+  s = s.replace(/\*\*([^*\n]+?)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>');
+  return s.replace(/(\d+)/g, (_, i) => '<code>' + codes[+i] + '</code>');
+}
+const LIST_RE = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
+function listBlock(lines, i) {
+  const root = { indent: -1, kids: [] }; const stack = [root]; let last = null;
+  while (i < lines.length) {
+    const line = lines[i]; const m = line.match(LIST_RE);
+    if (m) {
+      const indent = m[1].replace(/\t/g, '    ').length;
+      const node = { indent, ordered: /\d/.test(m[2]), start: parseInt(m[2], 10) || 1, text: [m[3]], kids: [] };
+      while (stack.length > 1 && indent <= stack[stack.length - 1].indent) stack.pop();
+      stack[stack.length - 1].kids.push(node); stack.push(node); last = node; i++; continue;
+    }
+    if (/^\s*$/.test(line)) {
+      const nx = lines[i + 1];
+      if (nx !== undefined && (LIST_RE.test(nx) || (last && /^\s{2,}\S/.test(nx) && !/^\s*```/.test(nx)))) { i++; continue; }
+      break;
+    }
+    if (last && /^\s{2,}\S/.test(line) && !/^\s*```/.test(line)) { last.text.push(line.trim()); i++; continue; }
+    break;
+  }
+  const render = (kids) => {
+    if (!kids.length) return '';
+    const ol = kids[0].ordered;
+    return (ol ? '<ol' + (kids[0].start !== 1 ? ' start="' + kids[0].start + '"' : '') + '>' : '<ul>') +
+      kids.map((k) => '<li>' + k.text.map(inline).join('<br>') + render(k.kids) + '</li>').join('') + (ol ? '</ol>' : '</ul>');
+  };
+  return [render(root.kids), i];
+}
+function md(src, base = 3) {
+  const lines = String(src || '').replace(/\r\n?/g, '\n').split('\n');
+  const out = []; const para = [];
+  const flush = () => { if (para.length) { out.push('<p>' + para.map(inline).join('<br>') + '</p>'); para.length = 0; } };
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i]; let m;
+    if (/^\s*```/.test(line)) {
+      flush(); const buf = []; i++;
+      while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) buf.push(lines[i++]);
+      i++; out.push('<pre><code>' + esc(buf.join('\n')) + '</code></pre>'); continue;
+    }
+    if ((m = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*$/))) {
+      flush(); const lv = Math.min(6, base + m[1].length - 1);
+      out.push('<h' + lv + '>' + inline(m[2]) + '</h' + lv + '>'); i++; continue;
+    }
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { flush(); out.push('<hr>'); i++; continue; }
+    if (/^\s*\|.+\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|?[\s:|-]*-{2,}[\s:|-]*\|?\s*$/.test(lines[i + 1])) {
+      flush();
+      const cells = (s) => s.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+      const head = cells(line); i += 2; const rows = [];
+      while (i < lines.length && /^\s*\|.+\|\s*$/.test(lines[i])) rows.push(cells(lines[i++]));
+      out.push('<div class="tbl"><table><thead><tr>' + head.map((c) => '<th>' + inline(c) + '</th>').join('') + '</tr></thead><tbody>' +
+        rows.map((r) => '<tr>' + r.map((c) => '<td>' + inline(c) + '</td>').join('') + '</tr>').join('') + '</tbody></table></div>');
+      continue;
+    }
+    if (/^\s*>/.test(line)) {
+      flush(); const buf = [];
+      while (i < lines.length && /^\s*>/.test(lines[i])) buf.push(lines[i++].replace(/^\s*>\s?/, ''));
+      out.push('<blockquote>' + md(buf.join('\n'), base) + '</blockquote>'); continue;
+    }
+    if (LIST_RE.test(line)) { flush(); const r = listBlock(lines, i); out.push(r[0]); i = r[1]; continue; }
+    if (/^\s*$/.test(line)) { flush(); i++; continue; }
+    para.push(line.trim()); i++;
+  }
+  flush();
+  return out.join('');
+}
+
+const mend = (t) => { t = String(t || '').replace(/(^|[^*])\*$/, '$1'); return ((t.match(/\*\*/g) || []).length % 2) ? t + '**' : t; };
+
+/* ---------- 台帳への書き込み指示を本文から分ける ---------- */
+const LEDGER_OPEN = '<<<LEDGER';
+function splitLedger(text, streaming) {
+  text = String(text || '');
+  const i = text.indexOf(LEDGER_OPEN);
+  if (i < 0) {
+    if (streaming) {
+      for (let k = Math.min(LEDGER_OPEN.length - 1, text.length); k > 0; k--) {
+        if (text.endsWith(LEDGER_OPEN.slice(0, k))) return { body: text.slice(0, -k).trimEnd(), raw: null };
+      }
+    }
+    return { body: text.trim(), raw: null };
+  }
+  let raw = text.slice(i + LEDGER_OPEN.length);
+  const j = raw.indexOf('>>>');
+  if (j >= 0) raw = raw.slice(0, j);
+  return { body: text.slice(0, i).trimEnd(), raw };
+}
+function parseActions(raw) {
+  if (!raw) return [];
+  const a = raw.indexOf('['); const b = raw.lastIndexOf(']');
+  if (a < 0 || b <= a) return [];
+  try { const v = JSON.parse(raw.slice(a, b + 1)); return Array.isArray(v) ? v : []; } catch (e) { return []; }
+}
+
+/* ---------- 保存 ---------- */
+const LS_KEY = 'jarvis-desk-v1';
+let db = null; let base = '';
+const queues = new Map();
+function enqueue(key, job) {
+  let q = queues.get(key);
+  if (!q) { q = { running: false, next: null }; queues.set(key, q); }
+  q.next = job;
+  if (q.running) return;
+  q.running = true;
+  (async () => {
+    while (q.next) { const j = q.next; q.next = null; try { await j(); } catch (e) { writeFailed(e); } }
+    q.running = false;
+  })();
+}
+let warned = false;
+function writeFailed(e) {
+  if (warned) return; warned = true;
+  toast(e && e.code === 'quota_exceeded' ? '保存の上限に達しました。古い発注書を消してください。' : '保存できませんでした。通信を確認してください。');
+  setTimeout(() => { warned = false; }, 8000);
+}
+function fitTurns(turns, maxBytes = 120000) {
+  let list = turns.slice(-60).map((t) => {
+    const o = { role: t.role, content: String(t.content || '').slice(0, 12000), at: t.at };
+    if (t.acts && t.acts.length) o.acts = t.acts.map((a) => ({ label: a.label }));
+    if (t.cut) o.cut = true; if (t.stopped) o.stopped = true; if (t.tier) o.tier = t.tier;
+    return o;
+  });
+  const size = () => new TextEncoder().encode(JSON.stringify(list)).length;
+  while (list.length > 2 && size() > maxBytes) list = list.slice(2);
+  return list;
+}
+function persistLocal() {
+  try { localStorage.setItem(LS_KEY, JSON.stringify({ prefs: S.prefs, memory: S.memory, projects: S.projects, orders: S.orders, turns: fitTurns(S.turns) })); } catch (e) { /* 保存できない表示では、開いている間だけ保持する */ }
+}
+function loadLocal() {
+  try {
+    const v = JSON.parse(localStorage.getItem(LS_KEY) || 'null');
+    if (!v) return;
+    S.prefs = { ...DEFAULT_PREFS, ...(v.prefs || {}) };
+    S.memory = Array.isArray(v.memory) ? v.memory : [];
+    S.projects = Array.isArray(v.projects) ? v.projects.sort(byOrder) : [];
+    S.orders = Array.isArray(v.orders) ? v.orders : [];
+    S.turns = Array.isArray(v.turns) ? v.turns : [];
+  } catch (e) { /* 何もなければ空で始める */ }
+}
+const Store = {
+  saveDesk() {
+    if (S.store === 'db') { const data = { v: 1, prefs: { ...S.prefs }, memory: S.memory.map((m) => ({ ...m })) }; enqueue('desk', () => db.doc(base + '/desk').set(data)); }
+    else persistLocal();
+  },
+  saveTalk() {
+    if (S.store === 'db') { const data = { turns: fitTurns(S.turns), updatedAt: Date.now() }; enqueue('talk', () => db.doc(base + '/talk').set(data)); }
+    else persistLocal();
+  },
+  saveProject(p) {
+    if (S.store === 'db') { const data = { ...p }; delete data.id; enqueue('p:' + p.id, () => db.doc(base + '/desk/projects/' + p.id).set(data)); }
+    else persistLocal();
+  },
+  deleteProject(id) {
+    if (S.store === 'db') enqueue('p:' + id, () => db.doc(base + '/desk/projects/' + id).delete());
+    else persistLocal();
+  },
+  saveOrder(o) {
+    if (S.store === 'db') { const data = { ...o }; delete data.id; enqueue('o:' + o.id, () => db.doc(base + '/desk/orders/' + o.id).set(data)); }
+    else persistLocal();
+  },
+  deleteOrder(id) {
+    if (S.store === 'db') enqueue('o:' + id, () => db.doc(base + '/desk/orders/' + id).delete());
+    else persistLocal();
+  },
+};
+const byOrder = (a, b) => (a.order || 0) - (b.order || 0) || String(a.name).localeCompare(String(b.name), 'ja');
+const byNewest = (a, b) => (b.createdAt || 0) - (a.createdAt || 0);
+
+function startDb() {
+  let pending = 4;
+  /* 保存先が10秒答えなければ、その旨を出して空の状態で使えるようにする。届いた分はあとから反映される。 */
+  const staleTimer = setTimeout(() => { if (!S.dbError) { S.stale = true; renderBanner(); } if (!S.loaded) finishLoad(); }, 10000);
+  const settle = () => { if (--pending === 0 && !S.loaded) finishLoad(); };
+  const live = (snap) => { if (!snap.metadata || !snap.metadata.fromCache) { clearTimeout(staleTimer); if (S.stale) { S.stale = false; renderBanner(); } } };
+  const first = { desk: true, projects: true, orders: true };
+  const once = (k) => { if (first[k]) { first[k] = false; settle(); } };
+  const fail = (k) => () => { clearTimeout(staleTimer); S.stale = false; S.dbError = true; once(k); renderBanner(); };
+
+  db.doc(base + '/desk').onSnapshot((snap) => {
+    live(snap);
+    if (snap.exists) {
+      const d = snap.data() || {};
+      S.prefs = { ...DEFAULT_PREFS, ...(d.prefs || {}) };
+      S.memory = Array.isArray(d.memory) ? d.memory.map((m) => ({ ...m })) : [];
+    }
+    const loaded = S.loaded; once('desk');
+    if (loaded) { renderHeader(); refreshGreeting(); updateVoiceUI(); if (S.tab === 'ledger') renderLedger(); if ($('#dlg-settings').open) renderMemory(); }
+  }, fail('desk'));
+
+  db.collection(base + '/desk/projects').onSnapshot((snap) => {
+    live(snap);
+    S.projects = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort(byOrder);
+    const loaded = S.loaded; once('projects');
+    if (loaded) { refreshGreeting(); if (S.tab === 'ledger') renderLedger(); if (S.tab === 'orders' && !S.openOrder) renderOrders(); updateTools(); }
+  }, fail('projects'));
+
+  db.collection(base + '/desk/orders').onSnapshot((snap) => {
+    live(snap);
+    S.orders = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort(byNewest);
+    const loaded = S.loaded; once('orders');
+    if (loaded && S.tab === 'orders' && !S.drafting && !S.openOrder) renderOrders();
+  }, fail('orders'));
+
+  db.doc(base + '/talk').get().then((snap) => {
+    if (!snap.exists || S.turns.length || S.busy) return;
+    const d = snap.data() || {};
+    S.turns = Array.isArray(d.turns) ? d.turns.map((t) => ({ ...t, acts: Array.isArray(t.acts) ? t.acts.map((a) => ({ ...a })) : undefined })) : [];
+    if (S.loaded) renderLog();
+  }, () => {}).then(settle);
+}
+function finishLoad() {
+  S.loaded = true;
+  renderHeader(); renderLog(); renderLedger(); renderOrders(); updateComposer(); updateTools(); updateVoiceUI(); renderBanner();
+}
+
+/* ---------- 状態表示とペンの軌跡 ---------- */
+const Trace = (() => {
+  const cv = $('#trace'); const ctx = cv.getContext('2d');
+  let w = 1; let hh = 1; let raf = 0; let mode = 'idle'; let pen = '#1747C9'; const t0 = performance.now();
+  const calm = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : { matches: false };
+  function colors() { pen = getComputedStyle(document.documentElement).getPropertyValue('--pen').trim() || pen; }
+  function size() {
+    const r = cv.getBoundingClientRect(); const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    w = Math.max(1, r.width); hh = Math.max(1, r.height);
+    cv.width = Math.round(w * dpr); cv.height = Math.round(hh * dpr); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  function wave(u, t) {
+    switch (mode) {
+      case 'thinking': return Math.sin(u * 20 - t * 4.5) * (0.4 + 0.3 * Math.sin(u * 5 + t * 1.6));
+      case 'writing': return Math.sin(u * 54 - t * 9) * 0.16 + Math.sin(u * 8 - t * 3) * 0.3;
+      case 'speaking': return Math.sin(u * 46 - t * 12) * 0.75 * Math.abs(Math.sin(u * 6 - t * 2.4)) * (0.65 + 0.35 * Math.sin(t * 5.3));
+      case 'listening': return Math.sin(u * 30 + t * 10) * 0.6 * Math.abs(Math.sin(u * 4 + t * 3.1));
+      default: return 0;
+    }
+  }
+  function draw(now) {
+    const t = calm.matches ? 1.3 : (now - t0) / 1000;
+    ctx.clearRect(0, 0, w, hh);
+    const mid = hh / 2;
+    ctx.strokeStyle = pen; ctx.lineWidth = 1.6; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (let x = 0; x <= w; x += 2) {
+      const u = x / w; const env = Math.pow(Math.sin(Math.PI * u), 0.8);
+      const y = mid - wave(u, t) * env * (mid - 3);
+      if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+  function loop(now) {
+    draw(now);
+    raf = (mode !== 'idle' && !document.hidden && !calm.matches) ? requestAnimationFrame(loop) : 0;
+  }
+  function kick() { if (!raf) raf = requestAnimationFrame(loop); }
+  function refresh() { colors(); size(); kick(); }
+  if (window.ResizeObserver) new ResizeObserver(refresh).observe(cv); else window.addEventListener('resize', refresh);
+  if (window.matchMedia) { const mq = window.matchMedia('(prefers-color-scheme: dark)'); if (mq.addEventListener) mq.addEventListener('change', refresh); else if (mq.addListener) mq.addListener(refresh); }
+  new MutationObserver(refresh).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  document.addEventListener('visibilitychange', kick);
+  refresh();
+  return { set(m) { mode = m; kick(); } };
+})();
+function setPresence(p) {
+  if (S.presence === p) return;
+  S.presence = p;
+  $('#presence-text').textContent = PRESENCE[p] || PRESENCE.idle;
+  $('#presence').dataset.state = p;
+  $('#stop-voice').hidden = p !== 'speaking';
+  Trace.set(p);
+}
+function restPresence() { if (S.presence !== 'speaking' && S.presence !== 'listening') setPresence('idle'); }
+
+let toastTimer = 0;
+function toast(msg) {
+  const t = $('#toast'); t.textContent = msg; t.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 3600);
+}
+function renderHeader() { $('#nameplate').textContent = S.prefs.assistantName || 'ジャービス'; $('#msg').placeholder = (S.prefs.assistantName || 'ジャービス') + 'に話しかける'; }
+function renderBanner() {
+  const b = $('#banner'); let msg = '';
+  if (S.denied) msg = 'このページからClaudeを使う許可がありません。ページのアクセス許可でClaudeの利用を許可すると、相談と発注書づくりができます。';
+  else if (S.caps.sample === null) msg = 'この表示ではClaudeにつながっていません。Claudeアプリの中で開くと相談できます。台帳の閲覧と編集はこのまま使えます。';
+  else if (S.dbError) msg = '保存先につながりませんでした。開き直すと直ることがあります。いま表示している内容は保存されません。';
+  else if (S.stale) msg = '保存データをまだ読み込めていません。表示が古い可能性があります。';
+  b.textContent = msg; b.hidden = !msg;
+}
+
+/* ---------- Claudeへの問い合わせ ---------- */
+function waitCap(name) {
+  return new Promise((resolve) => {
+    const tick = () => { if (S.caps[name] !== undefined) resolve(S.caps[name]); else setTimeout(tick, 150); };
+    tick();
+  });
+}
+function pickTier(text, purpose) {
+  if (/じっくり|深く考え|徹底的|多角的/.test(text)) return 'complex';
+  if (/手短に|ひとことで|一言で|ざっくり/.test(text)) return 'quick';
+  const pref = S.prefs.tier;
+  if (pref && pref !== 'auto') return pref;
+  if (purpose === 'talk' && text.length <= 12 && !/[?？]|なぜ|どう|案/.test(text)) return 'quick';
+  return 'default';
+}
+const ERR_TEXT = {
+  no_claude: 'Claudeにつながっていないため、返答できません。',
+  not_granted: 'このページからClaudeを使う許可がありません。',
+  sampling_disabled: 'このアカウントでは、ページからClaudeを使えません。',
+  session_expired: 'サインインが切れました。Claudeを開き直してください。',
+  refused: 'この内容には返答できませんでした。聞き方を変えてみてください。',
+  empty_completion: '返答が空でした。もう少し具体的に書いて送ってください。',
+  prompt_too_large: '会話が長くなりすぎました。「新しい相談」を始めてください。',
+  rate_limited: '立て込んでいます。少し待ってから送り直してください。',
+  usage_limit: 'Claudeの利用上限に達しました。時間をおいて送り直してください。',
+  upstream_error: '通信が途切れました。送り直してください。',
+};
+const HIDE_CODES = new Set(['not_granted', 'sampling_disabled', 'not_declared', 'capability_disabled', 'capability_removed']);
+function errText(e) {
+  const code = (e && e.code) || 'upstream_error';
+  if (code === 'rate_limited' && e && e.reason === 'usage_limit') return ERR_TEXT.usage_limit;
+  if (HIDE_CODES.has(code)) return ERR_TEXT[code] || ERR_TEXT.not_granted;
+  return ERR_TEXT[code] || ERR_TEXT.upstream_error;
+}
+function noteFailure(e) {
+  if (e && HIDE_CODES.has(e.code)) { S.denied = true; renderBanner(); updateComposer(); }
+}
+function ledgerText() {
+  return S.projects.map((p) => [
+    '- id:' + p.id, '名称:' + p.name, '区分:' + (KIND[p.kind] || KIND.work), '状態:' + (STATUS[p.status] || STATUS.spec).label,
+    '概要:' + (p.summary || '（未記入）'), '現状:' + (p.state || '（未記入）'), '次の一手:' + (p.next || '（未記入）'), '記載日:' + (p.asOf || '不明'),
+  ].join('｜')).join('\n');
+}
+function memoryText() { return S.memory.length ? S.memory.map((m) => '- ' + m.text).join('\n') : '（まだありません）'; }
+function rulesText() {
+  const name = S.prefs.assistantName || 'ジャービス'; const you = S.prefs.userName || '井上さん';
+  const len = S.prefs.length === 'normal' ? '通常は8文以内（350字程度まで）' : '通常は5文以内（200字程度まで）';
+  const focus = S.focus && S.projects.find((p) => p.id === S.focus);
+  const L = [
+    '# 役割',
+    `あなたは「${name}」。${you}専属の開発参謀です。${you}はダイカスト会社の試作・開発チームの班長で、設計と判断は自分で行い、実装はClaude Codeなどに任せる進め方をしています。あなたの仕事は3つです。`,
+    '1. 相談相手：技術相談やブレストの壁打ち役。',
+    '2. 番頭：下の「案件台帳」を把握し、状況の整理と次の一手を出す。',
+    '3. 発注係：やることが固まったら、発注書にまとめることを勧める（この画面の「発注」で作れる）。',
+    '',
+    '# 話し方',
+    `- 落ち着いた丁寧語で簡潔に。相手は「${you}」と呼ぶ。`,
+    `- スマホで読まれる。まず結論。${len}。詳しくと言われたら長くしてよい。`,
+    '- 箇条書きは多くて4点。表や長いコードは求められたときだけ。',
+    '- 最後は「次の一手の提案」か「問いを1つ」で終える。問いは一度に1つだけ。',
+    '',
+    '# 姿勢',
+    '- お世辞を言わない。同意できないときは理由を添えて反対する。相手の案には、弱点・リスク・代案のどれかを必ず1つ添える。',
+    '- 安全に関わること（溶湯、水蒸気爆発、高圧、電気、回転体など）は、求められなくても必ず指摘する。',
+    '- 知らないことは知らないと言う。台帳や会話にない事実・数値・ファイル名を作らない。推測は「推測ですが」と断る。',
+    `- あなたはWebを見られず、${you}のPCやリポジトリにも触れない。最新情報や実物の確認が必要なときは、そう伝えて確認の仕方を提案する。`,
+    '- 台帳の「記載日」が古い案件は、現状が変わっている可能性がある。断定せず、必要なら現状を尋ねる。',
+    '- あなたはClaudeが動かしているAIであり、尋ねられたらそう答える。',
+    '',
+    '# 台帳の更新',
+    `${you}が、進捗・決定・状態の変化・新しい案件・覚えておいてほしいことを「はっきり述べた」ときだけ、返答のいちばん最後に次の形式のブロックを1つ付ける。あなたの推測や提案では付けない。該当がなければ付けない。`,
+    '<<<LEDGER',
+    '[{"op":"update","id":"案件のid","status":"build","state":"現状を一文で","next":"次の一手"},',
+    ' {"op":"add","name":"案件名","kind":"work","status":"spec","summary":"概要を一文で","next":"次の一手"},',
+    ' {"op":"remember","text":"覚えておくこと"}]',
+    '>>>',
+    '- update は変える項目だけを書く。status は wait（判断待ち）/ build（実装・検証）/ spec（構想・仕様）/ run（運用中）/ hold（保留）のいずれか。kind は work（会社）/ personal（個人）。',
+    '- このブロックは画面に表示されず、台帳に反映される。本文では「台帳を更新します」と一言だけ触れる。',
+    '- 正しいJSON配列で書く。ブロックの後ろには何も書かない。',
+    '',
+    '# 今日',
+    new Date().toLocaleString('ja-JP', { dateStyle: 'full', timeStyle: 'short' }),
+    '',
+    '# 覚えていること',
+    memoryText(),
+    '',
+    `# 案件台帳（${S.projects.length}件）`,
+    ledgerText() || '（まだ登録がありません）',
+  ];
+  if (focus) L.push('', '# いま話題にしている案件', 'id:' + focus.id + '（' + focus.name + '）' + (focus.note ? '\nメモ：' + focus.note : ''));
+  L.push('', '以上を踏まえて、次のメッセージに答えてください。');
+  return L.join('\n');
+}
+function contextTurns(limit = 28000) {
+  const out = []; let n = 0;
+  for (let i = S.turns.length - 1; i >= 0 && out.length < 24; i--) {
+    const t = S.turns[i];
+    if (!t.content) continue;
+    n += t.content.length;
+    if (n > limit && out.length) break;
+    out.unshift({ role: t.role === 'assistant' ? 'assistant' : 'user', content: t.content });
+  }
+  while (out.length && out[0].role !== 'user') out.shift();
+  return out;
+}
+
+/* ---------- 相談 ---------- */
+function greetingText() {
+  const hr = new Date().getHours();
+  const hello = hr < 5 ? 'お疲れさまです' : hr < 11 ? 'おはようございます' : hr < 18 ? 'こんにちは' : 'こんばんは';
+  const head = (S.prefs.userName || '井上さん') + '、' + hello + '。';
+  if (!S.loaded) return head + '台帳を開いています。';
+  const n = S.projects.length;
+  if (!n) return head + '台帳はまだ空です。「台帳」で案件を登録するか、このまま話しかけてください。';
+  const waits = S.projects.filter((p) => p.status === 'wait');
+  const tail = waits.length
+    ? '判断待ちは' + waits.length + '件（' + waits.slice(0, 3).map((p) => p.name).join('、') + (waits.length > 3 ? ' ほか' : '') + '）です。'
+    : '判断待ちの案件はありません。';
+  return head + '台帳には' + n + '件あります。' + tail;
+}
+function refreshGreeting() { const g = $('#hello'); if (g) g.firstChild.textContent = greetingText(); }
+const STARTERS = [
+  { label: '今日は何から手を付ける？', send: '今日は何から手を付けるべきですか。台帳を見て、理由と一緒に教えてください。' },
+  { label: '止まっている案件は？', send: '台帳の中で、止まっていそうな案件や記載が古い案件を挙げてください。' },
+  { label: '壁打ちに付き合って', fill: '壁打ちしたいこと：' },
+  { label: '進捗を報告する', fill: '進捗の報告：' },
+];
+function startersEl() {
+  return h('div', { class: 'chips', id: 'starters' }, STARTERS.map((s) => h('button', {
+    type: 'button', class: 'chip', text: s.label,
+    onclick: () => { if (s.send) send(s.send); else { const ta = $('#msg'); ta.value = s.fill; autosize(ta); ta.focus(); } },
+  })));
+}
+function actsEl(turn, live) {
+  const box = h('div', { class: 'applied' });
+  turn.acts.forEach((a, i) => {
+    const row = h('p', null, h('span', { text: a.label }));
+    const undo = live && live[i] && live[i].undo;
+    if (undo) row.append(' ', h('button', {
+      type: 'button', class: 'link', text: '取り消す',
+      onclick: () => { undo(); a.label = '取り消しました：' + a.label.replace(/^[^：]*：/, ''); row.textContent = a.label; Store.saveTalk(); refreshGreeting(); if (S.tab === 'ledger') renderLedger(); },
+    }));
+    box.append(row);
+  });
+  return box;
+}
+function turnEl(t, live) {
+  if (t.role !== 'assistant') return h('div', { class: 'turn me', text: t.content });
+  const n = h('div', { class: 'turn jv' }, h('div', { class: 'md', html: md(t.content) }));
+  if (t.cut) n.append(h('p', { class: 'fine', text: '長くなったため途中までです。「続けて」と送ると続きを書きます。' }));
+  if (t.stopped) n.append(h('p', { class: 'fine', text: '途中で止まりました。' }));
+  if (t.tier === 'complex') n.append(h('p', { class: 'fine', text: 'じっくり考えて答えました。' }));
+  if (t.acts && t.acts.length) n.append(actsEl(t, live));
+  return n;
+}
+function errLine(e, retry) {
+  const n = h('div', { class: 'errline' }, h('span', { text: errText(e) }));
+  const code = e && e.code;
+  if (retry && !HIDE_CODES.has(code) && code !== 'no_claude' && code !== 'session_expired' && code !== 'prompt_too_large') {
+    n.append(h('button', { type: 'button', class: 'link', text: '送り直す', onclick: () => { n.remove(); retry(); } }));
+  }
+  return n;
+}
+function renderLog() {
+  const log = $('#log'); log.textContent = '';
+  log.append(h('div', { class: 'turn jv hello', id: 'hello' }, h('p', { text: greetingText() })));
+  for (const t of S.turns) log.append(turnEl(t));
+  if (!S.turns.length) log.append(startersEl());
+  updateTools();
+  requestAnimationFrame(() => { log.scrollTop = log.scrollHeight; });
+}
+const nearEnd = () => { const l = $('#log'); return l.scrollHeight - l.scrollTop - l.clientHeight < 90; };
+const toEnd = () => { const l = $('#log'); l.scrollTop = l.scrollHeight; };
+function autosize(ta) { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight + 3, 150) + 'px'; }
+function updateComposer() {
+  const off = S.caps.sample === null || S.denied;
+  $('#send').hidden = S.busy; $('#stop').hidden = !S.busy;
+  $('#send').disabled = off || !S.loaded;
+  const note = $('#talk-note');
+  note.hidden = !off;
+  if (off) note.textContent = S.denied ? 'Claudeの利用が許可されていないため、送れません。' : 'この表示では送れません。Claudeアプリの中で開いてください。';
+}
+function updateTools() {
+  const f = S.focus && S.projects.find((p) => p.id === S.focus);
+  if (S.focus && !f && S.loaded) S.focus = null;
+  $('#focus-chip').hidden = !f;
+  if (f) $('#focus-name').textContent = '話題：' + f.name;
+  const has = S.turns.length > 0;
+  $('#to-order').hidden = !has; $('#new-talk').hidden = !has;
+  $('#tools').hidden = !f && !has;
+}
+function send(text) {
+  text = String(text || '').trim();
+  if (!text || S.busy || !S.loaded || S.caps.sample === null || S.denied) return;
+  unlockDeviceVoice();
+  const st = $('#starters'); if (st) st.remove();
+  const turn = { role: 'user', content: text, at: Date.now() };
+  S.turns.push(turn);
+  $('#log').append(turnEl(turn)); toEnd(); updateTools();
+  answer();
+}
+async function answer() {
+  if (S.busy) return;
+  S.busy = true; updateComposer(); setPresence('thinking');
+  const log = $('#log');
+  const node = h('div', { class: 'turn jv' }, h('div', { class: 'md' }, h('p', { class: 'wait', text: '考えています' })));
+  log.append(node); toEnd();
+  const ctl = new AbortController(); S.ctl = ctl;
+  let frame = 0; let latest = '';
+  const paint = () => { frame = 0; const stick = nearEnd(); node.firstChild.innerHTML = md(mend(latest)); if (stick) toEnd(); };
+  try {
+    const sample = await waitCap('sample');
+    if (!sample) throw { code: 'no_claude' };
+    if (ctl.signal.aborted) throw { code: 'cancelled' };
+    const lastUser = [...S.turns].reverse().find((t) => t.role === 'user');
+    const res = await sample([{ role: 'user', content: rulesText() }, ...contextTurns()], {
+      cache: false, signal: ctl.signal, modelTier: pickTier(lastUser ? lastUser.content : '', 'talk'),
+      onText: ({ text }) => {
+        if (S.presence === 'thinking') setPresence('writing');
+        latest = splitLedger(text, true).body;
+        if (latest && !frame) frame = requestAnimationFrame(paint);
+      },
+    });
+    if (frame) cancelAnimationFrame(frame);
+    const parts = splitLedger(res.text, false);
+    const done = applyActions(parseActions(parts.raw));
+    const turn = { role: 'assistant', content: parts.body || '台帳を更新します。', at: Date.now() };
+    if (res.truncated) turn.cut = true;
+    if (res.modelTierApplied === 'complex') turn.tier = 'complex';
+    if (done.length) turn.acts = done.map((a) => ({ label: a.label }));
+    S.turns.push(turn);
+    const stick = nearEnd();
+    node.replaceWith(turnEl(turn, done));
+    if (stick) toEnd();
+    Store.saveTalk();
+    speak(turn.content);
+  } catch (e) {
+    if (frame) cancelAnimationFrame(frame);
+    const code = (e && e.code) || 'upstream_error';
+    const partial = e && typeof e.text === 'string' ? splitLedger(e.text, true).body.trim() : '';
+    node.remove();
+    if (partial) { const t = { role: 'assistant', content: partial, at: Date.now(), stopped: true }; S.turns.push(t); log.append(turnEl(t)); }
+    if (code !== 'cancelled') { noteFailure(e); log.append(errLine(e, retryAnswer)); }
+    toEnd(); Store.saveTalk();
+  } finally {
+    S.busy = false; S.ctl = null; restPresence(); updateComposer(); updateTools();
+  }
+}
+function retryAnswer() {
+  while (S.turns.length && S.turns[S.turns.length - 1].role === 'assistant') S.turns.pop();
+  renderLog();
+  if (S.turns.length) answer();
+}
+function applyActions(list) {
+  const done = [];
+  for (const a of list.slice(0, 8)) {
+    if (!a || typeof a !== 'object') continue;
+    if (a.op === 'update') {
+      const p = S.projects.find((x) => x.id === String(a.id));
+      if (!p) continue;
+      const before = { status: p.status, state: p.state, next: p.next, asOf: p.asOf, updatedAt: p.updatedAt };
+      let changed = false;
+      if (STATUS[a.status] && a.status !== p.status) { p.status = a.status; changed = true; }
+      if (typeof a.state === 'string' && a.state.trim()) { p.state = clip(a.state, 400); changed = true; }
+      if (typeof a.next === 'string' && a.next.trim()) { p.next = clip(a.next, 400); changed = true; }
+      if (!changed) continue;
+      p.asOf = ymd(); p.updatedAt = Date.now(); Store.saveProject(p);
+      const id = p.id;
+      done.push({ label: '台帳を更新しました：' + p.name, undo: () => { const q = S.projects.find((x) => x.id === id); if (q) { Object.assign(q, before); Store.saveProject(q); } } });
+    } else if (a.op === 'add') {
+      if (typeof a.name !== 'string' || !a.name.trim()) continue;
+      const p = newProject({
+        name: clip(a.name, 60), kind: a.kind === 'personal' ? 'personal' : 'work', status: STATUS[a.status] ? a.status : 'spec',
+        summary: typeof a.summary === 'string' ? clip(a.summary, 400) : '', next: typeof a.next === 'string' ? clip(a.next, 400) : '',
+      });
+      S.projects.push(p); Store.saveProject(p);
+      done.push({ label: '台帳に追加しました：' + p.name, undo: () => { S.projects = S.projects.filter((x) => x.id !== p.id); Store.deleteProject(p.id); } });
+    } else if (a.op === 'remember') {
+      if (typeof a.text !== 'string' || !a.text.trim()) continue;
+      const m = { id: uid('m'), text: clip(a.text, 300), at: Date.now() };
+      S.memory.push(m); Store.saveDesk();
+      done.push({ label: '覚えました：' + m.text, undo: () => { S.memory = S.memory.filter((x) => x.id !== m.id); Store.saveDesk(); } });
+    }
+  }
+  if (done.length) { refreshGreeting(); if (S.tab === 'ledger') renderLedger(); }
+  return done;
+}
+function newProject(f) {
+  const now = Date.now();
+  return { id: uid('p'), name: '', kind: 'work', status: 'spec', summary: '', state: '', next: '', note: '', asOf: ymd(), order: S.projects.reduce((m, p) => Math.max(m, p.order || 0), 0) + 1, createdAt: now, updatedAt: now, ...f };
+}
+
+/* ---------- 声 ---------- */
+let deviceUnlocked = false; let ttsLangs;
+const deviceVoiceOK = () => typeof window.speechSynthesis !== 'undefined' && typeof window.SpeechSynthesisUtterance !== 'undefined';
+function speakable(text) {
+  return String(text).replace(/```[\s\S]*?```/g, 'コードは画面に表示しています。').replace(/^\s*\|.*\|\s*$/gm, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').replace(/[#*_`>]/g, '').replace(/\n{2,}/g, '\n').trim();
+}
+function unlockDeviceVoice() {
+  if (deviceUnlocked || S.caps.tts || !S.prefs.voiceOn || !S.prefs.deviceVoice || !deviceVoiceOK()) return;
+  try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; window.speechSynthesis.speak(u); deviceUnlocked = true; } catch (e) { /* 鳴らせない表示 */ }
+}
+function deviceSpeak(text) {
+  try {
+    const ss = window.speechSynthesis; ss.cancel();
+    const parts = text.match(/[^。！？\n]+[。！？]?/g) || [text];
+    let i = 0; setPresence('speaking');
+    const next = () => {
+      if (i >= parts.length || S.presence !== 'speaking') { if (S.presence === 'speaking') setPresence('idle'); return; }
+      const u = new SpeechSynthesisUtterance(parts[i++]); u.lang = 'ja-JP'; u.rate = 1.05;
+      u.onend = next; u.onerror = () => { if (S.presence === 'speaking') setPresence('idle'); };
+      ss.speak(u);
+    };
+    next();
+  } catch (e) { if (S.presence === 'speaking') setPresence('idle'); }
+}
+async function speak(text, force) {
+  if (!force && !S.prefs.voiceOn) return;
+  const plain = speakable(text).slice(0, 2600);
+  if (!plain) return;
+  const tts = S.caps.tts;
+  if (tts) {
+    const lines = plain.split('\n').map((s) => s.trim()).filter(Boolean).slice(0, 30).map((s) => ({ text: s.slice(0, 1900) }));
+    const opts = { voice: S.prefs.voice || 'buttery' };
+    if (ttsLangs && ttsLangs.includes('ja')) opts.language = 'ja';
+    try { await tts.speak(lines, opts); }
+    catch (e) { if (e && (e.code === 'not_granted' || e.code === 'unavailable')) { S.caps.tts = null; updateVoiceUI(); } }
+  } else if ((force || S.prefs.deviceVoice) && deviceVoiceOK()) deviceSpeak(plain);
+}
+function stopSpeaking() {
+  if (S.caps.tts) S.caps.tts.stop().catch(() => {});
+  if (deviceVoiceOK()) { try { window.speechSynthesis.cancel(); } catch (e) { /* 無視 */ } }
+  if (S.presence === 'speaking') setPresence(S.busy ? 'thinking' : 'idle');
+}
+function wireTts(t) {
+  t.onState(({ state }) => {
+    if (state === 'speaking' || state === 'starting') setPresence('speaking');
+    else if (state === 'idle' && S.presence === 'speaking') setPresence(S.busy ? 'thinking' : 'idle');
+  });
+  if (typeof t.languages === 'function') t.languages().then((l) => { ttsLangs = l; }, () => {});
+}
+function wireDictation(d) {
+  const mic = $('#mic'); mic.hidden = false;
+  d.onPartial(({ text }) => { $('#partial').textContent = text; });
+  d.onFinal(({ text }) => { const ta = $('#msg'); ta.value = ta.value ? ta.value + text : text.replace(/^\s+/, ''); autosize(ta); $('#partial').textContent = ''; });
+  d.onState(({ state, reason }) => {
+    const on = state !== 'idle';
+    mic.setAttribute('aria-pressed', on ? 'true' : 'false'); mic.classList.toggle('on', on);
+    mic.setAttribute('aria-label', on ? '音声入力を終える' : '音声で入力する');
+    if (on) setPresence('listening');
+    else { $('#partial').textContent = ''; if (S.presence === 'listening') setPresence(S.busy ? 'thinking' : 'idle'); }
+    if (!on && (reason === 'not_granted' || reason === 'unavailable')) mic.hidden = true;
+    if (!on && reason === 'rate_limited') toast('音声入力が混み合っています。少し待ってください。');
+  });
+  mic.addEventListener('click', () => {
+    if (d.active()) { d.stop().catch(() => {}); return; }
+    d.start().catch((e) => { if (e && (e.code === 'not_granted' || e.code === 'unavailable')) mic.hidden = true; });
+  });
+}
+function updateVoiceUI() {
+  const tts = !!S.caps.tts; const dev = !tts && deviceVoiceOK();
+  $('#set-voice-row').hidden = !tts; $('#set-voicekind-row').hidden = !tts; $('#set-device-row').hidden = !dev;
+  $('#voice-test').hidden = !(tts || dev);
+  const canToggle = tts || (dev && S.prefs.deviceVoice);
+  const tg = $('#voice-toggle'); tg.hidden = !canToggle;
+  tg.setAttribute('aria-pressed', S.prefs.voiceOn && canToggle ? 'true' : 'false');
+  const mic = S.caps.dictation ? 'マイクのボタンで音声入力ができます。' : '音声で入力するときは、キーボードのマイクを使ってください。';
+  $('#voice-note').textContent = (S.caps.tts === undefined ? '' : tts ? '' : dev ? '' : 'この表示では読み上げは使えません。') + (S.caps.dictation === undefined ? '' : mic);
+}
+
+/* ---------- 台帳 ---------- */
+function lamp(s) { return h('span', { class: 'lamp', data: { s }, 'aria-hidden': 'true' }); }
+function renderLedger() {
+  const root = $('#ledger-body'); const keep = root.scrollTop; root.textContent = '';
+  const byKind = S.projects.filter((p) => S.filterKind === 'all' || p.kind === S.filterKind);
+  const list = byKind.filter((p) => !S.filterStatus || p.status === S.filterStatus);
+
+  root.append(h('div', { class: 'view-head' },
+    h('h2', { text: '案件台帳' }),
+    h('p', { class: 'fine', text: S.loaded ? S.projects.length + '件' : '読み込んでいます' }),
+  ));
+  root.append(h('div', { class: 'btn-row' },
+    h('button', { type: 'button', class: 'btn primary', text: S.reviewing ? '見ています' : '全体を見てもらう', disabled: S.reviewing || !S.projects.length || S.caps.sample === null || S.denied, onclick: askReview }),
+    h('button', { type: 'button', class: 'btn', text: '案件を追加', onclick: () => openProject(null) }),
+  ));
+
+  if (S.reviewing) root.append(h('div', { class: 'note' }, h('h3', { class: 'sec-title', text: '所見' }), h('div', { class: 'md', id: 'review-live' }, h('p', { class: 'wait', text: '台帳を見ています' }))));
+  else if (S.reviewError) root.append(h('div', { class: 'errline' }, h('span', { text: errText(S.reviewError) })));
+  else if (S.prefs.review && S.prefs.review.text) {
+    const d = new Date(S.prefs.review.at || Date.now());
+    root.append(h('div', { class: 'note' },
+      h('h3', { class: 'sec-title', text: '所見（' + (d.getMonth() + 1) + '月' + d.getDate() + '日 ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + '）' }),
+      h('div', { class: 'md', html: md(S.prefs.review.text) }),
+    ));
+  }
+
+  if (S.projects.length) {
+    const kinds = h('div', { class: 'filters', role: 'group', 'aria-label': '区分で絞る' },
+      [['all', 'すべて'], ['work', '会社'], ['personal', '個人']].map(([k, label]) => h('button', {
+        type: 'button', class: 'chip', text: label, 'aria-pressed': S.filterKind === k ? 'true' : 'false',
+        onclick: () => { S.filterKind = k; renderLedger(); },
+      })));
+    const stats = h('div', { class: 'filters', role: 'group', 'aria-label': '状態で絞る' },
+      STATUS_ORDER.map((s) => {
+        const n = byKind.filter((p) => p.status === s).length;
+        if (!n && S.filterStatus !== s) return null;
+        return h('button', {
+          type: 'button', class: 'chip', 'aria-pressed': S.filterStatus === s ? 'true' : 'false',
+          onclick: () => { S.filterStatus = S.filterStatus === s ? null : s; renderLedger(); },
+        }, lamp(s), STATUS[s].label + ' ' + n);
+      }));
+    root.append(kinds, stats);
+  }
+
+  if (!S.loaded) root.append(h('p', { class: 'empty', text: '台帳を開いています。' }));
+  else if (!S.projects.length) root.append(h('p', { class: 'empty', text: '案件はまだありません。「案件を追加」で登録するか、「相談」で話すと追加されます。' }));
+  else if (!list.length) root.append(h('p', { class: 'empty', text: 'この条件に合う案件はありません。' }));
+  else {
+    root.append(h('div', { class: 'ann' }, list.map((p) => h('button', {
+      type: 'button', class: 'tile', data: { status: p.status }, onclick: () => openProject(p.id),
+    }, h('span', { class: 'nm', text: p.name }), h('span', { class: 'st' }, lamp(p.status), (STATUS[p.status] || STATUS.spec).label)))));
+    root.append(h('div', { class: 'sheet rows' }, list.map((p) => h('button', { type: 'button', class: 'row', onclick: () => openProject(p.id) },
+      h('span', { class: 'hd' }, h('span', { class: 'nm', text: p.name }), h('span', { class: 'st' }, lamp(p.status), (STATUS[p.status] || STATUS.spec).label)),
+      p.state ? h('span', { class: 'kv' }, h('span', { class: 'k', text: '現状' }), p.state) : null,
+      h('span', { class: 'kv' }, h('span', { class: 'k', text: '次の一手' }), p.next || '未記入'),
+      h('span', { class: 'asof', text: (KIND[p.kind] || KIND.work) + '　記載 ' + (p.asOf || '不明') }),
+    ))));
+  }
+  root.scrollTop = keep;
+}
+function reviewPrompt() {
+  const name = S.prefs.assistantName || 'ジャービス'; const you = S.prefs.userName || '井上さん';
+  return [
+    `あなたは「${name}」。${you}の番頭として、下の案件台帳を見て所見を述べてください。`,
+    '- スマホで読まれる。全体で300字以内。見出しは使わず、次の3点をこの順で、太字の書き出しに続けて短く書く。',
+    '  **今日手を付けるなら**：1〜3件。理由を一言ずつ。',
+    '  **気になる点**：記載が古い、次の一手が空、判断待ちのまま、手を広げすぎ、などを具体的な案件名で。',
+    '  **提案**：ひとつだけ。',
+    '- 台帳にない事実を作らない。お世辞は不要。優先の根拠が台帳から読み取れないときは、そう書いて、何を教えてほしいかを尋ねる。',
+    '',
+    '# 今日',
+    new Date().toLocaleString('ja-JP', { dateStyle: 'full', timeStyle: 'short' }),
+    '',
+    '# 覚えていること',
+    memoryText(),
+    '',
+    `# 案件台帳（${S.projects.length}件）`,
+    ledgerText(),
+  ].join('\n');
+}
+const BUSY_TEXT = '返答の途中です。終わってからもう一度押してください。';
+async function askReview() {
+  if (S.busy) { toast(BUSY_TEXT); return; }
+  S.busy = true; S.reviewing = true; S.reviewError = null; updateComposer(); renderLedger(); setPresence('thinking');
+  const ctl = new AbortController(); S.ctl = ctl;
+  try {
+    const sample = await waitCap('sample');
+    if (!sample) throw { code: 'no_claude' };
+    const res = await sample(reviewPrompt(), {
+      cache: false, signal: ctl.signal, modelTier: pickTier('', 'review'),
+      onText: ({ text }) => { if (S.presence === 'thinking') setPresence('writing'); const n = $('#review-live'); if (n) n.innerHTML = md(mend(text)); },
+    });
+    S.prefs.review = { text: res.text.trim(), at: Date.now() }; Store.saveDesk();
+  } catch (e) {
+    if (!e || e.code !== 'cancelled') { S.reviewError = e || { code: 'upstream_error' }; noteFailure(e); }
+  } finally {
+    S.busy = false; S.reviewing = false; S.ctl = null; restPresence(); updateComposer(); renderLedger();
+  }
+}
+
+/* 案件の編集 */
+let editing = null;
+function openProject(id) {
+  const p = id ? S.projects.find((x) => x.id === id) : null;
+  editing = p ? p.id : null;
+  $('#pj-title').textContent = p ? '案件' : '案件を追加';
+  $('#pj-name').value = p ? p.name : '';
+  $('#pj-status').value = p ? p.status : 'spec';
+  $('#pj-kind').value = p ? (p.kind || 'work') : 'work';
+  $('#pj-summary').value = p ? (p.summary || '') : '';
+  $('#pj-state').value = p ? (p.state || '') : '';
+  $('#pj-next').value = p ? (p.next || '') : '';
+  $('#pj-note').value = p ? (p.note || '') : '';
+  $('#pj-meta').textContent = p ? '記載日 ' + (p.asOf || '不明') : '';
+  $('#pj-delete').hidden = !p;
+  openDialog($('#dlg-project'));
+  requestAnimationFrame(() => document.querySelectorAll('#dlg-project textarea').forEach(fitField));
+}
+function fitField(t) { t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight + 3, 260) + 'px'; }
+function saveProjectForm() {
+  const name = $('#pj-name').value.trim();
+  if (!name) { $('#pj-name').focus(); toast('名称を入れてください。'); return null; }
+  const f = { name: clip(name, 60), status: $('#pj-status').value, kind: $('#pj-kind').value, summary: $('#pj-summary').value.trim(), state: $('#pj-state').value.trim(), next: $('#pj-next').value.trim(), note: $('#pj-note').value.trim() };
+  let p = editing ? S.projects.find((x) => x.id === editing) : null;
+  if (p) {
+    const moved = p.status !== f.status || p.state !== f.state || p.next !== f.next;
+    const same = !moved && p.name === f.name && p.kind === f.kind && p.summary === f.summary && p.note === f.note;
+    if (!same) { Object.assign(p, f, { updatedAt: Date.now() }); if (moved) p.asOf = ymd(); Store.saveProject(p); }
+  } else { p = newProject(f); S.projects.push(p); editing = p.id; Store.saveProject(p); }
+  refreshGreeting(); renderLedger();
+  return p;
+}
+
+/* ---------- 発注 ---------- */
+function nextOrderNo() {
+  const d = new Date(); const head = 'JV-' + String(d.getFullYear()).slice(2) + pad(d.getMonth() + 1) + pad(d.getDate()) + '-';
+  const n = S.orders.filter((o) => String(o.no || '').startsWith(head)).reduce((m, o) => Math.max(m, parseInt(String(o.no).slice(head.length), 10) || 0), 0);
+  return head + pad(n + 1);
+}
+function orderPrompt(o, p) {
+  const name = S.prefs.assistantName || 'ジャービス'; const you = S.prefs.userName || '井上さん';
+  const copilot = o.target === 'Microsoft 365 Copilot';
+  const rules = [
+    '- 出力はMarkdownの発注書だけ。挨拶や前置きは書かず、全体をコードブロックで囲まない。',
+    '- 1行目は「# 」に続けて件名（30字以内）。そのあと、次の見出しをこの順で使う：',
+    '  ## 目的 / ## 背景・前提 / ## 作業範囲 / ## やらないこと / ## 制約 / ## 進め方 / ## 受け入れ基準 / ## 報告 / ## 未確認事項',
+    '- 発注先が読んですぐ着手できる具体さで書く。「適切に」「いい感じに」のような曖昧な言葉を使わない。',
+    '- 依頼・台帳・下のメモに書かれていない事実（ファイル名、関数名、数値、環境）を作らない。必要なのに分からないことは「未確認事項」に質問として書き、本文の該当箇所には「（未確認）」と書く。',
+    '- 安全に関わる作業を含む場合は、制約の先頭に安全上の注意を書く。',
+    `- ${you}の方針（下の「覚えていること」）に反する指示を書かない。`,
+  ];
+  if (copilot) rules.push(
+    '- 発注先はMicrosoft 365 Copilot。リポジトリの操作やテストの実行は指示しない。渡す資料、出力の形式（Word・Excel・PowerPointなど）、確認してほしい観点を具体的に書く。',
+    '- 「進め方」は番号付きの手順、「報告」は成果物の形として書く。受け入れ基準は、成果物を見て合否を判定できる形で書く。',
+    '- 制約には次を必ず入れる：資料にない内容を推測で補わない／元の資料の数値や表現を勝手に変えない／不明点は末尾に質問として挙げる。',
+  ); else rules.push(
+    o.target === '社内ローカルAI'
+      ? '- 発注先は社内のローカルAI（社内のGitサーバー上で自律的に作業する）。段階を小さく切り、判断が要る箇所はあらかじめ決めて書く。'
+      : '- 発注先はClaude Code。リポジトリの中で自律的に作業する前提で書く。',
+    '- 受け入れ基準は、コマンドの結果・数値・ファイルの有無など、第三者が合否を判定できる形で書く。',
+    o.staged
+      ? '- 進め方は段階（S0、S1、…）に分ける。S0は現状の調査と計画だけにする。各段階の終わりに結果を報告ファイル（例：docs/S0_REPORT.md）へ書いて停止し、承認を待つよう指示する。'
+      : '- 進め方は段階（S0、S1、…）に分け、最後にまとめて報告するよう指示する。',
+    '- 制約には次を必ず入れる：仕様にない判断は docs/ASSUMPTIONS.md に日付・理由・影響範囲を記録する／推測で値や引数を決めない／合格条件を緩めて合格にしない／既存の動作とテストを壊さない。',
+  );
+  return [
+    `あなたは「${name}」。${you}の発注係として、下の依頼を発注先にそのまま渡せる発注書にまとめてください。`,
+    '', '# 書き方の決まり', ...rules,
+    '', '# 発注先', o.target,
+    '', '# 覚えていること', memoryText(),
+    '', '# 対象の案件',
+    p ? ['名称：' + p.name, '概要：' + (p.summary || '（未記入）'), '現状：' + (p.state || '（未記入）'), '次の一手：' + (p.next || '（未記入）'), p.note ? 'メモ：' + p.note : ''].filter(Boolean).join('\n') : '（指定なし。新しい作業、または台帳にない作業）',
+    '', '# 依頼', o.brief,
+  ].join('\n');
+}
+const cleanDoc = (t) => { t = String(t || '').trim(); const m = t.match(/^```[\w-]*\n([\s\S]*?)\n```$/); return (m ? m[1] : t).trim(); };
+const titleOf = (body) => { const m = String(body).match(/^\s*#\s+(.+)$/m); return m ? clip(m[1].replace(/[*`]/g, ''), 40) : ''; };
+const bodyWithoutTitle = (body) => String(body).replace(/^\s*#\s+.+\n?/, '');
+function paintOrderBody() { const n = $('#order-doc'); if (n && S.openOrder) n.innerHTML = md(mend(bodyWithoutTitle(S.openOrder.body)), 2) || '<p class="wait">書いています</p>'; }
+async function runOrder(order, input, isNew) {
+  if (S.busy) { toast(BUSY_TEXT); return; }
+  const backup = { body: order.body, title: order.title, cut: order.cut };
+  S.busy = true; S.drafting = true; S.orderError = null; S.openOrder = order; order.body = ''; updateComposer(); renderOrders(); setPresence('thinking');
+  const ctl = new AbortController(); S.ctl = ctl; let frame = 0;
+  try {
+    const sample = await waitCap('sample');
+    if (!sample) throw { code: 'no_claude' };
+    const res = await sample(input, {
+      cache: false, signal: ctl.signal, modelTier: pickTier(order.brief || '', 'order'),
+      onText: ({ text }) => { if (S.presence === 'thinking') setPresence('writing'); order.body = text; if (!frame) frame = requestAnimationFrame(() => { frame = 0; paintOrderBody(); }); },
+    });
+    order.body = cleanDoc(res.text); order.title = titleOf(order.body) || clip(order.brief || '発注書', 30);
+    order.cut = !!res.truncated; order.updatedAt = Date.now();
+    if (isNew) { S.orders.unshift(order); if (S.form.brief.trim() === order.brief) S.form.brief = ''; }
+    Store.saveOrder(order);
+  } catch (e) {
+    Object.assign(order, backup);
+    if (isNew) S.openOrder = null;
+    if (!e || e.code !== 'cancelled') { S.orderError = e || { code: 'upstream_error' }; noteFailure(e); }
+  } finally {
+    if (frame) cancelAnimationFrame(frame);
+    S.busy = false; S.drafting = false; S.ctl = null; restPresence(); updateComposer(); renderOrders();
+  }
+}
+function makeOrder(brief, projectId) {
+  if (S.busy) { toast(BUSY_TEXT); return; }
+  const p = S.projects.find((x) => x.id === projectId) || null;
+  const order = { id: uid('o'), no: nextOrderNo(), title: '作成中', projectId: p ? p.id : '', projectName: p ? p.name : '', target: S.form.target, staged: !!S.form.staged, brief, body: '', createdAt: Date.now(), updatedAt: Date.now() };
+  go('orders');
+  runOrder(order, orderPrompt(order, p), true);
+}
+function refineOrder(order, ask) {
+  const p = S.projects.find((x) => x.id === order.projectId) || null;
+  runOrder(order, [
+    { role: 'user', content: orderPrompt(order, p) },
+    { role: 'assistant', content: order.body },
+    { role: 'user', content: '次の点を直して、発注書の全体を同じ決まりで書き直してください。\n' + ask },
+  ], false);
+}
+function orderFromTalk() {
+  const turns = S.turns.filter((t) => t.content).slice(-12);
+  if (!turns.length) return;
+  const you = S.prefs.userName || '井上さん'; const name = S.prefs.assistantName || 'ジャービス';
+  const brief = '次の相談の記録から、ここで固まった作業を発注書にしてください。決まっていないことは未確認事項に回してください。\n\n' +
+    turns.map((t) => (t.role === 'assistant' ? name : you) + '：' + t.content.slice(0, 1500)).join('\n\n');
+  makeOrder(brief, S.focus || '');
+}
+function renderOrders() {
+  const root = $('#orders-body'); const keep = root.scrollTop; root.textContent = '';
+  const off = S.caps.sample === null || S.denied;
+  if (S.openOrder) {
+    const o = S.openOrder; const d = new Date(o.createdAt || Date.now());
+    root.append(h('div', { class: 'view-head' }, h('h2', { text: '発注書' })));
+    root.append(h('div', { class: 'btn-row' },
+      S.drafting
+        ? h('button', { type: 'button', class: 'btn', text: '書くのを止める', onclick: () => { if (S.ctl) S.ctl.abort(); } })
+        : h('button', { type: 'button', class: 'btn', text: '一覧に戻る', onclick: () => { S.openOrder = null; S.orderError = null; renderOrders(); } }),
+    ));
+    if (S.orderError) root.append(h('div', { class: 'errline' }, h('span', { text: errText(S.orderError) })));
+    root.append(h('article', { class: 'sheet' },
+      h('dl', { class: 'tb' },
+        h('dt', { text: '発注番号' }), h('dd', { text: o.no }),
+        h('dt', { text: '件名' }), h('dd', { class: 'ttl', text: S.drafting ? '作成中' : o.title }),
+        h('dt', { text: '対象' }), h('dd', { text: o.projectName || '指定なし' }),
+        h('dt', { text: '発注先' }), h('dd', { text: o.target }),
+        h('dt', { text: '日付' }), h('dd', { text: ymd(d) }),
+      ),
+      h('div', { class: 'doc md', id: 'order-doc', html: md(bodyWithoutTitle(o.body), 2) || '<p class="wait">書いています</p>' }),
+    ));
+    if (!S.drafting) {
+      if (o.cut) root.append(h('p', { class: 'fine', text: '長くなったため途中で切れています。範囲を絞って書き直しを頼んでください。' }));
+      const src = h('textarea', { class: 'src', id: 'order-src', readonly: true, hidden: true, 'aria-label': '発注書の本文（Markdown）' });
+      src.value = o.body;
+      root.append(h('div', { class: 'btn-row' },
+        h('button', { type: 'button', class: 'btn primary', text: 'コピー', onclick: async () => {
+          try { await navigator.clipboard.writeText(o.body); toast('コピーしました。発注先に貼り付けてください。'); }
+          catch (e) { src.hidden = false; src.focus(); src.select(); toast('下の枠を長押ししてコピーしてください。'); }
+        } }),
+        S.caps.downloads ? h('button', { type: 'button', class: 'btn', text: 'ファイルに保存', onclick: async () => {
+          try { await S.caps.downloads.save({ filename: o.no + '.md', data: o.body + '\n' }); toast('保存しました。'); }
+          catch (e) { if (!e || e.code !== 'declined') toast('保存できませんでした。コピーを使ってください。'); }
+        } }) : null,
+        h('button', { type: 'button', class: 'btn danger', text: '削除', onclick: async () => {
+          if (!(await confirmBox('この発注書を削除します。元に戻せません。'))) return;
+          S.orders = S.orders.filter((x) => x.id !== o.id); Store.deleteOrder(o.id); S.openOrder = null; renderOrders();
+        } }),
+      ), src);
+      const ask = h('textarea', { id: 'order-ask', rows: 2, placeholder: '例：S1を2つに分ける。受け入れ基準に処理時間を入れる。' });
+      root.append(h('div', { class: 'form' },
+        h('div', { class: 'f' }, h('label', { for: 'order-ask', text: '直してほしい点' }), ask),
+        h('div', { class: 'btn-row' }, h('button', { type: 'button', class: 'btn', text: '書き直してもらう', disabled: off, onclick: () => { const v = ask.value.trim(); if (!v) { ask.focus(); return; } refineOrder(o, v); } })),
+      ));
+    }
+    root.scrollTop = S.drafting ? 0 : keep;
+    return;
+  }
+
+  root.append(h('div', { class: 'view-head' }, h('h2', { text: '発注書を作る' })));
+  if (S.orderError) root.append(h('div', { class: 'errline' }, h('span', { text: errText(S.orderError) })));
+  const sel = h('select', { id: 'od-project', onchange: (e) => { S.form.projectId = e.target.value; } },
+    h('option', { value: '', text: '指定しない' }), S.projects.map((p) => h('option', { value: p.id, text: p.name })));
+  sel.value = S.projects.some((p) => p.id === S.form.projectId) ? S.form.projectId : '';
+  const tgt = h('select', { id: 'od-target', onchange: (e) => { S.form.target = e.target.value; renderOrders(); } }, TARGETS.map((t) => h('option', { value: t, text: t })));
+  tgt.value = S.form.target;
+  const brief = h('textarea', { id: 'od-brief', rows: 5, placeholder: '作らせたいこと、直させたいことを書く。箇条書きでも、話し言葉でも構いません。', oninput: (e) => { S.form.brief = e.target.value; } });
+  brief.value = S.form.brief;
+  const staged = h('input', { type: 'checkbox', id: 'od-staged', onchange: (e) => { S.form.staged = e.target.checked; } });
+  staged.checked = !!S.form.staged;
+  root.append(h('div', { class: 'form' },
+    h('div', { class: 'f2' },
+      h('div', { class: 'f' }, h('label', { for: 'od-project', text: '対象の案件' }), sel),
+      h('div', { class: 'f' }, h('label', { for: 'od-target', text: '発注先' }), tgt),
+    ),
+    h('div', { class: 'f' }, h('label', { for: 'od-brief', text: '依頼の内容' }), brief),
+    S.form.target === 'Microsoft 365 Copilot' ? null : h('label', { class: 'check' }, staged, h('span', { text: '段階ごとに止めて報告させる' })),
+    h('div', { class: 'btn-row' }, h('button', { type: 'button', class: 'btn primary', text: '発注書を作る', disabled: off, onclick: () => {
+      const v = brief.value.trim(); if (!v) { brief.focus(); toast('依頼の内容を書いてください。'); return; }
+      S.form.brief = v; makeOrder(v, sel.value);
+    } })),
+    off ? h('p', { class: 'fine', text: 'Claudeにつながっていないため、いまは作成できません。' }) : null,
+  ));
+
+  root.append(h('h3', { class: 'sec-title', text: 'これまでの発注書' }));
+  if (!S.orders.length) root.append(h('p', { class: 'empty', text: 'まだありません。作った発注書はここに残ります。' }));
+  else root.append(h('div', { class: 'sheet rows' }, S.orders.map((o) => h('button', { type: 'button', class: 'row', onclick: () => { S.openOrder = o; S.orderError = null; renderOrders(); $('#orders-body').scrollTop = 0; } },
+    h('span', { class: 'hd' }, h('span', { class: 'nm', text: o.title || '発注書' })),
+    h('span', { class: 'asof', text: [o.no, o.projectName || '指定なし', o.target].join('　') }),
+  ))));
+  root.scrollTop = keep;
+}
+
+/* ---------- 設定 ---------- */
+function renderMemory() {
+  const ul = $('#mem-list'); ul.textContent = '';
+  if (!S.memory.length) { ul.append(h('li', null, h('span', { class: 'fine', text: 'まだありません。' }))); return; }
+  for (const m of S.memory) ul.append(h('li', null, h('span', { text: m.text }),
+    h('button', { type: 'button', class: 'link', text: '消す', 'aria-label': '「' + clip(m.text, 20) + '」を消す', onclick: () => { S.memory = S.memory.filter((x) => x.id !== m.id); Store.saveDesk(); renderMemory(); } })));
+}
+function openSettings() {
+  $('#set-user').value = S.prefs.userName || ''; $('#set-name').value = S.prefs.assistantName || '';
+  $('#set-length').value = S.prefs.length || 'short'; $('#set-tier').value = S.prefs.tier || 'auto';
+  $('#set-voice').checked = !!S.prefs.voiceOn; $('#set-voicekind').value = S.prefs.voice || 'buttery'; $('#set-device').checked = !!S.prefs.deviceVoice;
+  $('#export').hidden = !S.caps.downloads;
+  $('#store-note').textContent = S.store === 'db' ? '台帳・会話・発注書は、このページ専用の保存先にあなた用として保存されます。ページを共有しても、ほかの人には見えません。'
+    : 'この表示では、台帳と会話はこの端末のブラウザにだけ保存されます。';
+  renderMemory(); updateVoiceUI();
+  openDialog($('#dlg-settings'));
+}
+function setPref(k, v) { if (S.prefs[k] === v) return; S.prefs[k] = v; Store.saveDesk(); renderHeader(); refreshGreeting(); updateVoiceUI(); }
+
+/* ---------- 重ねて開く面 ---------- */
+function openDialog(d) { if (typeof d.showModal === 'function') { if (!d.open) d.showModal(); } else d.setAttribute('open', ''); }
+function closeDialog(d) { if (typeof d.close === 'function') { if (d.open) d.close(); } else d.removeAttribute('open'); }
+let confirmDone = null;
+function confirmBox(text, yes) {
+  $('#cf-text').textContent = text; $('#cf-yes').textContent = yes || '削除する';
+  openDialog($('#dlg-confirm'));
+  return new Promise((resolve) => { confirmDone = (v) => { confirmDone = null; closeDialog($('#dlg-confirm')); resolve(v); }; });
+}
+
+/* ---------- 画面の切り替え ---------- */
+const TABS = ['talk', 'ledger', 'orders'];
+function showTab(t) {
+  if (!TABS.includes(t)) t = 'talk';
+  S.tab = t;
+  for (const k of TABS) $('#view-' + k).hidden = k !== t;
+  document.querySelectorAll('.tab').forEach((a) => { if (a.dataset.tab === t) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
+  if (t === 'ledger') renderLedger();
+  if (t === 'orders') renderOrders();
+  if (t === 'talk') requestAnimationFrame(toEnd);
+}
+function go(t) { try { if (location.hash !== '#' + t) location.hash = t; } catch (e) { /* 番地を変えられない表示 */ } showTab(t); }
+function route() { showTab((location.hash || '').replace('#', '')); }
+
+/* ---------- 操作のつなぎ込み ---------- */
+function wire() {
+  document.querySelectorAll('.tab').forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); go(a.dataset.tab); }));
+  window.addEventListener('hashchange', route);
+
+  const ta = $('#msg');
+  ta.addEventListener('input', () => autosize(ta));
+  ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); $('#send').click(); } });
+  $('#send').addEventListener('click', () => { const v = ta.value; if (!v.trim() || S.busy) return; ta.value = ''; autosize(ta); send(v); });
+  $('#stop').addEventListener('click', () => { if (S.ctl) S.ctl.abort(); });
+  $('#stop-voice').addEventListener('click', stopSpeaking);
+  $('#focus-clear').addEventListener('click', () => { S.focus = null; updateTools(); });
+  $('#to-order').addEventListener('click', orderFromTalk);
+  $('#new-talk').addEventListener('click', async () => {
+    if (S.busy) return;
+    if (!(await confirmBox('いまの会話を消して、新しい相談を始めます。台帳と発注書は残ります。', '消して始める'))) return;
+    S.turns = []; S.focus = null; Store.saveTalk(); renderLog();
+  });
+
+  $('#open-settings').addEventListener('click', openSettings);
+  $('#voice-toggle').addEventListener('click', () => {
+    const on = !S.prefs.voiceOn; setPref('voiceOn', on);
+    if (on) { unlockDeviceVoice(); toast('返答を読み上げます。'); } else { stopSpeaking(); toast('読み上げを止めました。'); }
+  });
+  $('#set-user').addEventListener('change', (e) => setPref('userName', e.target.value.trim() || DEFAULT_PREFS.userName));
+  $('#set-name').addEventListener('change', (e) => setPref('assistantName', e.target.value.trim() || DEFAULT_PREFS.assistantName));
+  $('#set-length').addEventListener('change', (e) => setPref('length', e.target.value));
+  $('#set-tier').addEventListener('change', (e) => setPref('tier', e.target.value));
+  $('#set-voice').addEventListener('change', (e) => { setPref('voiceOn', e.target.checked); if (!e.target.checked) stopSpeaking(); });
+  $('#set-voicekind').addEventListener('change', (e) => setPref('voice', e.target.value));
+  $('#set-device').addEventListener('change', (e) => { S.prefs.deviceVoice = e.target.checked; S.prefs.voiceOn = e.target.checked; Store.saveDesk(); if (e.target.checked) unlockDeviceVoice(); else stopSpeaking(); updateVoiceUI(); });
+  $('#voice-test').addEventListener('click', () => speak((S.prefs.assistantName || 'ジャービス') + 'です。読み上げの確認です。', true));
+  const addMem = () => { const i = $('#mem-new'); const v = i.value.trim(); if (!v) { i.focus(); return; } S.memory.push({ id: uid('m'), text: clip(v, 300), at: Date.now() }); i.value = ''; Store.saveDesk(); renderMemory(); };
+  $('#mem-add').addEventListener('click', addMem);
+  $('#mem-new').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); addMem(); } });
+  $('#export').addEventListener('click', async () => {
+    const dl = S.caps.downloads; if (!dl) return;
+    const data = JSON.stringify({ exportedAt: new Date().toISOString(), prefs: S.prefs, memory: S.memory, projects: S.projects, orders: S.orders, turns: S.turns }, null, 2);
+    try { await dl.save({ filename: 'jarvis-desk-' + ymd() + '.json', data }); toast('書き出しました。'); }
+    catch (e) { if (!e || e.code !== 'declined') toast('書き出せませんでした。'); }
+  });
+  $('#clear-talk').addEventListener('click', async () => {
+    if (S.busy) return;
+    if (!(await confirmBox('会話をすべて消します。台帳と発注書は残ります。', '会話を消す'))) return;
+    S.turns = []; Store.saveTalk(); renderLog(); toast('会話を消しました。');
+  });
+
+  document.querySelectorAll('#dlg-project textarea').forEach((t) => t.addEventListener('input', () => fitField(t)));
+  const st = $('#pj-status');
+  STATUS_ORDER.forEach((s) => st.append(h('option', { value: s, text: STATUS[s].label })));
+  $('#pj-save').addEventListener('click', () => { if (saveProjectForm()) closeDialog($('#dlg-project')); });
+  $('#pj-talk').addEventListener('click', () => { const p = saveProjectForm(); if (!p) return; closeDialog($('#dlg-project')); S.focus = p.id; updateTools(); go('talk'); $('#msg').focus(); });
+  $('#pj-order').addEventListener('click', () => { const p = saveProjectForm(); if (!p) return; closeDialog($('#dlg-project')); S.form.projectId = p.id; S.openOrder = null; go('orders'); });
+  $('#pj-delete').addEventListener('click', async () => {
+    const p = S.projects.find((x) => x.id === editing); if (!p) return;
+    if (!(await confirmBox('「' + p.name + '」を台帳から削除します。元に戻せません。'))) return;
+    S.projects = S.projects.filter((x) => x.id !== p.id); Store.deleteProject(p.id);
+    closeDialog($('#dlg-project')); refreshGreeting(); renderLedger(); updateTools();
+  });
+
+  document.querySelectorAll('dialog').forEach((d) => {
+    d.addEventListener('click', (e) => { if (e.target === d) closeDialog(d); });
+    d.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => closeDialog(d)));
+  });
+  $('#cf-yes').addEventListener('click', () => { if (confirmDone) confirmDone(true); });
+  $('#cf-no').addEventListener('click', () => { if (confirmDone) confirmDone(false); });
+  $('#dlg-confirm').addEventListener('close', () => { if (confirmDone) confirmDone(false); });
+}
+
+/* ---------- 起動 ---------- */
+async function start(saved) {
+  wire(); route(); renderHeader(); renderLog(); updateComposer(); updateVoiceUI();
+  if (saved && typeof saved.draft === 'string') { $('#msg').value = saved.draft; autosize($('#msg')); }
+  const c = window.claude;
+  if (!c || typeof c.use !== 'function') {
+    S.caps = { sample: null, dictation: null, tts: null, downloads: null };
+    S.store = 'local'; loadLocal(); finishLoad(); return;
+  }
+  const cap = (name, then) => c.use(name).then((v) => { S.caps[name] = v || null; if (v && then) then(v); }, () => { S.caps[name] = null; });
+  cap('sample').then(() => { updateComposer(); renderBanner(); if (S.tab !== 'talk') showTab(S.tab); });
+  cap('dictation', wireDictation).then(updateVoiceUI);
+  cap('tts', wireTts).then(updateVoiceUI);
+  cap('downloads').then(() => { if (S.tab === 'orders') renderOrders(); });
+  let id = null; let store = null;
+  try {
+    const got = await Promise.all([c.use('db'), c.use('user')]);
+    store = got[0]; id = got[1] ? await got[1].id() : null;
+  } catch (e) { store = null; }
+  if (store && id) { db = store; base = 'data/users/' + id; S.store = 'db'; startDb(); }
+  else { S.store = 'local'; loadLocal(); finishLoad(); }
+}
+const hot = window.claude && window.claude.hot;
+if (hot && typeof hot.snapshot === 'function') { try { hot.snapshot(() => ({ draft: $('#msg').value })); } catch (e) { /* 引き継ぎなしで続ける */ } }
+if (hot && typeof hot.ready === 'function') hot.ready(start); else start((hot && hot.data) || {});
+})();
+</script>
+</body>
+</html>
